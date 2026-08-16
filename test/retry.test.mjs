@@ -23,7 +23,7 @@ const code = src.slice(from, to).replace(
   'const sleep = (ms) => { slept.push(Math.round(ms)); return Promise.resolve(); };');
 
 const make = new Function('slept', 'fetch', 'setTimeout', 'clearTimeout', 'AbortController', 'Math',
-  code + '; return { fetchRetry, fetchOk, backoff, transient };');
+  code + '; return { fetchRetry, fetchOk, backoff, transient, transientImagery };');
 
 const load = (stub) => make(slept, stub, setTimeout, clearTimeout, AbortController, scope.Math);
 
@@ -173,4 +173,27 @@ await t('transient covers 429 and 5xx only', async () => {
   for (const s of [200, 301, 400, 401, 403, 404, 409, 422]) assert.ok(!transient(s), 'should not retry ' + s);
 });
 
-console.log('\nretry: ' + pass + ' assertions groups passed');
+// --- retryOn override (imagery treats a transient 404 as retryable) -------
+await t('retryOn override retries a 404 and can recover', async () => {
+  let calls = 0;
+  const { fetchRetry, transient } = load(async () => (++calls < 3 ? res(404) : res(200)));
+  const r = await fetchRetry('u', { tries: 4, retryOn: (s) => transient(s) || s === 404 });
+  assert.equal(calls, 3);
+  assert.equal(r.status, 200);
+  assert.equal(r.attempts, 3);
+});
+
+await t('default policy still leaves 404 alone', async () => {
+  let calls = 0;
+  const { fetchRetry } = load(async () => { calls++; return res(404); });
+  await fetchRetry('u', { tries: 4 });
+  assert.equal(calls, 1, 'a 404 on /sc/* must not be retried away');
+});
+
+await t('transientImagery adds 404 and nothing else', async () => {
+  const { transientImagery } = load(async () => res(200));
+  for (const s of [404, 429, 500, 503]) assert.ok(transientImagery(s), 'should retry ' + s);
+  for (const s of [200, 400, 401, 403, 422]) assert.ok(!transientImagery(s), 'should not retry ' + s);
+});
+
+console.log('\nretry: ' + pass + ' groups passed');

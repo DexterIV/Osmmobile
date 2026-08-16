@@ -357,13 +357,20 @@ function backoff(attempt, base = 400, cap = 8000) {
 // A 4xx is a real answer and stands. Only transient conditions are retried.
 const transient = (status) => status === 429 || (status >= 500 && status < 600);
 
+// The budynki /orto proxy is measured returning 404 on roughly half of all
+// GetMap requests, transiently — the identical URL succeeds on retry. So for
+// imagery, and only for imagery, a 404 is treated as transient too. It stays
+// definitive for /sc/* and friends, where a 404 means the route is genuinely
+// absent and retrying would only hide a real misconfiguration.
+const transientImagery = (status) => transient(status) || status === 404;
+
 // Every network path goes through this: bounded timeout plus retries.
 // Rejects with an Error carrying .kind ('network' | 'timeout' | 'http') so
 // callers can tell a missing CORS header from a slow mobile connection —
 // they are indistinguishable in the raw fetch rejection, and conflating
 // them is what previously disabled auto-fit on a passing network blip.
 async function fetchRetry(url, opts = {}) {
-  const { tries = 3, timeout = 15000, onAttempt, ...init } = opts;
+  const { tries = 3, timeout = 15000, onAttempt, retryOn = transient, ...init } = opts;
   let last = null;
   for (let i = 1; i <= tries; i++) {
     if (i > 1) await sleep(Math.max(backoff(i - 1), last && last.after || 0));
@@ -372,7 +379,7 @@ async function fetchRetry(url, opts = {}) {
     const timer = setTimeout(() => { timedOut = true; ac.abort(); }, timeout);
     try {
       const r = await fetch(url, Object.assign({}, init, { signal: ac.signal }));
-      if (transient(r.status) && i < tries) {
+      if (retryOn(r.status) && i < tries) {
         const ra = Number(r.headers.get('retry-after'));
         last = { msg: 'HTTP ' + r.status, kind: 'http', after: ra > 0 ? Math.min(ra * 1000, 10000) : 0 };
         if (onAttempt) onAttempt(i, last.msg);
@@ -519,7 +526,7 @@ async function diagnose() {
       } catch (err) {
         return 'image ok but pixels blocked — auto-fit disabled';
       }
-    }, { mode: 'cors', tries: 3, timeout: 25000 });
+    }, { mode: 'cors', tries: 4, timeout: 25000, retryOn: transientImagery });
 
     // If the cors fetch above failed we cannot tell "no CORS header" from
     // "server unreachable". A plain <img> ignores CORS entirely, so it
@@ -617,7 +624,15 @@ async function loadRandom() {
     await loadArea();
   } catch (err) {
     setStage('');
-    toast('Could not reach the server: ' + classify(err) + ' — run diagnostics in settings', 'warn');
+    // /random/ was measured answering 500 on every attempt, so this is the
+    // expected path rather than an edge case. Point at the way round it
+    // instead of implying the whole server is unreachable.
+    if (err.kind === 'http') {
+      toast('The server\'s /random/ endpoint is failing (' + err.message +
+        '). Pan to an area yourself and use “Load this area”.', 'warn');
+    } else {
+      toast('Could not reach the server: ' + classify(err) + ' — run diagnostics in settings', 'warn');
+    }
   }
 }
 
@@ -750,7 +765,10 @@ function makeImagery() {
   imgLayer.bringToBack();
 }
 
-const TILE_TRIES = 3;
+// Four, not three, because the /orto proxy's measured per-request success rate
+// is only about one in two: three tries would still leave better than one tile
+// in ten blank on a screenful.
+const TILE_TRIES = 4;
 
 function tileCacheMixin(Base) {
   return Base.extend({
@@ -804,7 +822,9 @@ function tileCacheMixin(Base) {
         let corsShaped = false;
         if (pixelMode !== 'blocked') {
           try {
-            const r = await fetchOk(url, { mode: 'cors', tries: TILE_TRIES, timeout: 12000 });
+            const r = await fetchOk(url, {
+              mode: 'cors', tries: TILE_TRIES, timeout: 12000, retryOn: transientImagery,
+            });
             const b = await r.blob();
             if (gone()) return;
             if (S.tileTTLdays > 0) dbPut('tiles', url, { blob: b, t: Date.now() }).catch(() => {});
@@ -1137,7 +1157,9 @@ async function autoAlign() {
       '&STYLES=&LAYERS=' + encodeURIComponent(src.layers) +
       '&WIDTH=' + SZ + '&HEIGHT=' + SZ + '&BBOX=' + bbox.join(',');
 
-    const resp = await fetchOk(url, { mode: 'cors', tries: 3, timeout: 20000 });
+    const resp = await fetchOk(url, {
+      mode: 'cors', tries: 4, timeout: 20000, retryOn: transientImagery,
+    });
     const bmp = await createImageBitmap(await resp.blob());
     const cv = document.createElement('canvas');
     cv.width = SZ; cv.height = SZ;

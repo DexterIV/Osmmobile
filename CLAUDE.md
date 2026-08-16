@@ -63,9 +63,32 @@ sticks to the object rather than to a coordinate hash.
 
 `LAYERS=Raster` is confirmed from their `map.js`. Not a guess.
 
-**Unverified:** whether `/sc/*` is actually live in production. The routes are in the repo's current
-`main` and its nginx config, but the authoring environment was firewalled off from that host, so no
-endpoint ever returned a real response. Settings → **Run diagnostics** probes all of them.
+### Upstream state, measured 2026-08-16
+
+Probed directly from the shell, so these are server-side facts. They say nothing about CORS from a
+browser beyond the headers observed; Settings → **Run diagnostics** is still what confirms the
+browser's view.
+
+| endpoint | result |
+|---|---|
+| `/layers/` | 200, `Access-Control-Allow-Origin: *` |
+| `/sc/proposed_buildings` | 200 with features, `Access-Control-Allow-Origin: *` |
+| `/sc/proposed_addresses` | 200, `Access-Control-Allow-Origin: *` |
+| `/random/` | **500 on every attempt** (`{"message": "Internal Server Error"}`), 5/5 then 12/12 |
+| `/orto` GetMap | **404 on roughly half of all requests**, transiently |
+
+So `/sc/*` **is** live and does send the CORS header — the old "unverified" caveat is resolved.
+
+Two upstream faults are live and are not ours to fix:
+
+1. **`/random/` is simply broken.** It answered 500 every single time. "Find somewhere with work"
+   cannot work; the app now says so and points at *Load this area* instead of blaming the network.
+2. **`/orto` is about 50% reliable.** The identical GetMap URL returns 404 then 200 with no pattern —
+   12 trials gave 4/12 on `/orto` and 7/12 on `/orto/`, and a retry of a 404'd URL succeeded every
+   time. The trailing slash makes no real difference; an early reading that it did was an artefact of
+   this flakiness, so do not "fix" the preset URL on that basis. Because the failure arrives as a
+   404, the ordinary retry policy would ignore it, which is why imagery alone uses
+   `transientImagery` and four attempts.
 
 ## Why auto-fit needs the proxy
 
@@ -156,8 +179,13 @@ but that was never measured.** Do not describe the wasm as a large speedup.
 
 ## Open work
 
-- Run diagnostics from the real origin and confirm all probes pass, especially `imagery` reporting
-  pixels readable.
+- Run diagnostics from the real origin and confirm `imagery` reports pixels readable. Published at
+  `https://dexteriv.github.io/Osmmobile/` and serving; `/sc/*` and `/layers/` are confirmed live
+  server-side, `/random/` is confirmed broken, `/orto` is confirmed ~50% flaky.
+- Decide what to do about `/random/` being 500. Either report it upstream or drop the button.
+- The `~50%` figure for `/orto` came from 24 requests on one connection. If it is really load
+  dependent rather than random, jittered retries may be making it worse, not better — worth
+  measuring per-tile attempt counts on a real screenful before trusting `TILE_TRIES = 4`.
 - Tune the auto-fit confidence gate. Currently refuses below z=1.6; untested against real
   orthophoto over tree cover and snow.
 - Addresses currently upload as standalone nodes. Merging an address into an existing OSM building
