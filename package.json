@@ -8,7 +8,7 @@
     "build": "node build.mjs",
     "serve": "python3 -m http.server 8080",
     "dev": "npm run build && npm run serve",
-    "test": "npm run build && node test/wasm.test.mjs"
+    "test": "npm run build && node test/wasm.test.mjs && node test/retry.test.mjs"
   },
   "devDependencies": {
     "assemblyscript": "^0.28.20",

@@ -1020,6 +1020,9 @@ let S = Object.assign({}, DEF);
 let wasm = null;
 let db = null;
 let pixelMode = 'unknown';
+// Number of times a cors fetch failed on a tile that a plain <img> then
+// loaded. That pairing, and only that pairing, means "no CORS headers".
+let corsSignals = 0;
 
 const $ = (id) => document.getElementById(id);
 const fmt = (n, d = 1) => Number(n).toFixed(d);
@@ -1311,6 +1314,87 @@ function classify(err) {
   return m;
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Jittered exponential backoff. The jitter matters because a screenful of
+// tiles fails at the same instant, and unjittered retries would march in
+// lockstep and hammer the server in synchronised bursts.
+function backoff(attempt, base = 400, cap = 8000) {
+  return Math.min(cap, base * 2 ** (attempt - 1)) * (0.7 + Math.random() * 0.6);
+}
+
+// A 4xx is a real answer and stands. Only transient conditions are retried.
+const transient = (status) => status === 429 || (status >= 500 && status < 600);
+
+// Every network path goes through this: bounded timeout plus retries.
+// Rejects with an Error carrying .kind ('network' | 'timeout' | 'http') so
+// callers can tell a missing CORS header from a slow mobile connection —
+// they are indistinguishable in the raw fetch rejection, and conflating
+// them is what previously disabled auto-fit on a passing network blip.
+async function fetchRetry(url, opts = {}) {
+  const { tries = 3, timeout = 15000, onAttempt, ...init } = opts;
+  let last = null;
+  for (let i = 1; i <= tries; i++) {
+    if (i > 1) await sleep(Math.max(backoff(i - 1), last && last.after || 0));
+    const ac = new AbortController();
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; ac.abort(); }, timeout);
+    try {
+      const r = await fetch(url, Object.assign({}, init, { signal: ac.signal }));
+      if (transient(r.status) && i < tries) {
+        const ra = Number(r.headers.get('retry-after'));
+        last = { msg: 'HTTP ' + r.status, kind: 'http', after: ra > 0 ? Math.min(ra * 1000, 10000) : 0 };
+        if (onAttempt) onAttempt(i, last.msg);
+        continue;
+      }
+      r.attempts = i;
+      return r;
+    } catch (err) {
+      last = timedOut
+        ? { msg: 'timeout after ' + timeout + 'ms', kind: 'timeout' }
+        : { msg: classify(err), kind: 'network' };
+      if (onAttempt) onAttempt(i, last.msg);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  const e = new Error(last ? last.msg : 'failed');
+  e.kind = last ? last.kind : 'network';
+  e.attempts = tries;
+  throw e;
+}
+
+// Same contract as fetchRetry but throws on a non-ok status too.
+async function fetchOk(url, opts) {
+  const r = await fetchRetry(url, opts);
+  if (!r.ok) {
+    const e = new Error('HTTP ' + r.status);
+    e.kind = 'http';
+    e.attempts = r.attempts;
+    throw e;
+  }
+  return r;
+}
+
+function markPixelsBlocked(why) {
+  if (pixelMode === 'blocked') return;
+  pixelMode = 'blocked';
+  const b = $('autoBtn');
+  b.disabled = true;
+  b.title = 'Auto-fit unavailable: ' + why;
+  toast('Imagery pixels are not readable (' + why + '). Use the drift pad.', 'warn');
+}
+
+// Called whenever the imagery source changes. Without this a single bad
+// source left auto-fit disabled for the rest of the session even after
+// switching to one that does send CORS headers.
+function resetPixelMode() {
+  pixelMode = 'unknown';
+  corsSignals = 0;
+  const b = $('autoBtn');
+  if (b) { b.disabled = false; b.title = ''; }
+}
+
 function envReport() {
   const framed = window.self !== window.top;
   const host = location.hostname || '(none)';
@@ -1336,17 +1420,29 @@ async function diagnose() {
   }
   out.push('');
 
-  const probe = async (label, url, check) => {
+  const line = (s) => {
+    out.push(s);
+    $('diagOut').textContent = out.join('\n');
+  };
+
+  const probe = async (label, url, check, opts) => {
     const t0 = performance.now();
+    const notes = [];
+    const o = Object.assign({ tries: 3, timeout: 15000 }, opts);
+    o.onAttempt = (n, msg) => notes.push('try ' + n + ': ' + msg);
+    const ms = () => (performance.now() - t0).toFixed(0) + 'ms';
     try {
-      const r = await fetch(url);
-      const ms = (performance.now() - t0).toFixed(0);
-      if (!r.ok) { out.push(label.padEnd(12) + 'HTTP ' + r.status + '  ' + ms + 'ms'); return; }
-      const detail = check ? await check(r) : 'ok';
-      out.push(label.padEnd(12) + detail + '  ' + ms + 'ms');
+      const r = await fetchRetry(url, o);
+      // Retries that eventually succeeded are the interesting case: the
+      // endpoint works but is flaky, which reads as "broken" without this.
+      const tail = '  ' + ms() + (r.attempts > 1 ? '  (recovered on try ' + r.attempts + ')' : '');
+      if (!r.ok) { line(label.padEnd(12) + 'HTTP ' + r.status + tail); }
+      else { line(label.padEnd(12) + (check ? await check(r) : 'ok') + tail); }
     } catch (err) {
-      out.push(label.padEnd(12) + 'FAIL  ' + classify(err));
+      line(label.padEnd(12) + 'FAIL [' + (err.kind || '?') + '] ' + err.message +
+        '  ' + ms() + '  after ' + (err.attempts || 1) + ' tries');
     }
+    for (const n of notes) line('            · ' + n);
   };
 
   await probe('random', base + '/random/', async (r) => {
@@ -1367,10 +1463,12 @@ async function diagnose() {
     return 'ok  ' + (j.features || []).length + ' features';
   });
   await probe('josm_data', base + '/josm_data?filter_by=bbox&layers=addresses_to_import,buildings_to_import&' + q,
-    async (r) => 'ok  ' + ((await r.text()).length / 1024).toFixed(0) + ' KB xml');
+    async (r) => 'ok  ' + ((await r.text()).length / 1024).toFixed(0) + ' KB xml',
+    { tries: 2, timeout: 45000 });
   await probe('overpass', 'https://overpass-api.de/api/interpreter?data=' +
     encodeURIComponent('[out:json][timeout:10];node(52.20,21.00,52.201,21.001);out count;'),
-    async (r) => { await r.json(); return 'ok'; });
+    async (r) => { await r.json(); return 'ok'; },
+    { tries: 3, timeout: 30000 });
 
   const src = imagerySource();
   if (!src.xyz) {
@@ -1390,7 +1488,22 @@ async function diagnose() {
       } catch (err) {
         return 'image ok but pixels blocked — auto-fit disabled';
       }
+    }, { mode: 'cors', tries: 3, timeout: 25000 });
+
+    // If the cors fetch above failed we cannot tell "no CORS header" from
+    // "server unreachable". A plain <img> ignores CORS entirely, so it
+    // separates the two: img ok + fetch failed = missing headers, meaning
+    // tiles will still draw but auto-fit and the tile cache cannot work.
+    const imgOk = await new Promise((res) => {
+      const t = new Image();
+      const timer = setTimeout(() => { t.src = ''; res(false); }, 25000);
+      t.onload = () => { clearTimeout(timer); res(true); };
+      t.onerror = () => { clearTimeout(timer); res(false); };
+      t.src = u;
     });
+    line('imagery<img> '.padEnd(12) + (imgOk
+      ? 'ok — tiles will draw (if the fetch above failed, headers are missing)'
+      : 'FAIL — the imagery endpoint itself is unreachable'));
   }
 
   $('diagOut').textContent = out.join('\n');
@@ -1401,10 +1514,9 @@ async function fetchArea(bounds) {
   const q = 'xmin=' + bounds.getWest().toFixed(6) + '&ymin=' + bounds.getSouth().toFixed(6) +
     '&xmax=' + bounds.getEast().toFixed(6) + '&ymax=' + bounds.getNorth().toFixed(6);
   const base = apiBase();
-  const grab = (path) => fetch(base + path + '?' + q).then((r) => {
-    if (!r.ok) throw new Error(path + ' -> ' + r.status);
-    return r.json();
-  });
+  const grab = (path) => fetchOk(base + path + '?' + q, { tries: 3, timeout: 20000 })
+    .then((r) => r.json())
+    .catch((err) => { throw new Error(path + ' -> ' + err.message); });
   let bl, ad;
   try {
     [bl, ad] = await Promise.all([
@@ -1413,7 +1525,8 @@ async function fetchArea(bounds) {
     ]);
   } catch (err) {
     const legacy = base + '/josm_data?filter_by=bbox&layers=addresses_to_import,buildings_to_import&' + q;
-    const r = await fetch(legacy).catch(() => null);
+    // josm_data builds the XML on demand and is markedly slower.
+    const r = await fetchRetry(legacy, { tries: 2, timeout: 45000 }).catch(() => null);
     if (r && r.ok) {
       toast('Primary endpoint failed, used josm_data instead (no reject reporting)', 'warn');
       return parseOsmXml(await r.text());
@@ -1467,8 +1580,7 @@ async function loadArea() {
 async function loadRandom() {
   setStage('Finding somewhere with work');
   try {
-    const r = await fetch(apiBase() + '/random/');
-    if (!r.ok) throw new Error('random -> ' + r.status);
+    const r = await fetchOk(apiBase() + '/random/', { tries: 3, timeout: 15000 });
     const j = await r.json();
     map.setView([j.lat, j.lon], 17, { animate: false });
     await loadArea();
@@ -1518,7 +1630,11 @@ async function reportReject(c) {
   if (!S.reportRejects || !c.srcId) return;
   const path = c.kind === 'building' ? '/sc/proposed_buildings/report' : '/sc/proposed_addresses/report';
   try {
-    await fetch(apiBase() + path, {
+    // Deliberately tries: 1. This removes the object for every other mapper,
+    // so a bounded timeout is welcome but re-sending on a doubtful failure is
+    // not — a silent no-op is the safer outcome of the two.
+    await fetchRetry(apiBase() + path, {
+      tries: 1, timeout: 15000,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify([String(c.srcId)]),
@@ -1532,26 +1648,29 @@ async function buildContext() {
   if (!candidates.length) return;
   const [s, w, n, e] = bboxOf(candidates);
   const key = [s, w, n, e].map((v) => v.toFixed(3)).join(',');
-  let data = await dbGet('ctx', key);
+  let data = await dbGet('ctx', key).catch(() => null);
   if (!data || Date.now() - data.t > S.ctxTTLhours * 3600e3) {
     const q = `[out:json][timeout:90];(way["building"](${s},${w},${n},${e});relation["building"](${s},${w},${n},${e}););out center;`;
     try {
-      const r = await fetch('https://overpass-api.de/api/interpreter', {
+      // Overpass sheds load with 429 and 504 routinely, and honours
+      // Retry-After when it does. The client timeout sits just above the
+      // 90 s server-side one so we do not give up before it answers.
+      const r = await fetchOk('https://overpass-api.de/api/interpreter', {
+        tries: 3, timeout: 95000,
         method: 'POST',
         body: 'data=' + encodeURIComponent(q),
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       });
-      if (!r.ok) throw new Error('overpass ' + r.status);
       const j = await r.json();
       data = { t: Date.now(), pts: j.elements.filter((el) => el.center || el.lat).map((el) => [el.center ? el.center.lat : el.lat, el.center ? el.center.lon : el.lon]) };
-      await dbPut('ctx', key, data);
+      await dbPut('ctx', key, data).catch(() => {});
     } catch (err) {
-      toast('OSM context unavailable, order will be file order', 'warn');
+      toast('OSM context unavailable (' + err.message + '), order will be file order', 'warn');
       ctxIndexReady = false;
       return;
     }
   }
-  if (!data.pts.length) { ctxIndexReady = false; return; }
+  if (!data.pts || !data.pts.length) { ctxIndexReady = false; return; }
   const lat = W.f64(data.pts.map((p) => p[0]));
   const lon = W.f64(data.pts.map((p) => p[1]));
   wasm.indexBuild(lat, lon, data.pts.length, 0.002);
@@ -1578,9 +1697,14 @@ function imagerySource() {
 function makeImagery() {
   const src = imagerySource();
   if (imgLayer) map.removeLayer(imgLayer);
+  resetPixelMode();
+  // tileerror now only fires once a tile has exhausted every retry, so a
+  // handful of them is a real problem rather than transient noise.
   let fails = 0;
   const onErr = () => {
-    if (++fails === 6) toast('Imagery is not loading. Open settings and pick another source.', 'warn');
+    if (++fails === 4) {
+      toast('Imagery still failing after ' + TILE_TRIES + ' retries per tile. Open settings and pick another source.', 'warn');
+    }
   };
   if (src.xyz) {
     imgLayer = cachedTileLayer(src.xyz, { maxZoom: 21, attribution: src.attr });
@@ -1595,6 +1719,8 @@ function makeImagery() {
   imgLayer.bringToBack();
 }
 
+const TILE_TRIES = 3;
+
 function tileCacheMixin(Base) {
   return Base.extend({
     createTile(coords, done) {
@@ -1602,40 +1728,96 @@ function tileCacheMixin(Base) {
       img.setAttribute('role', 'presentation');
       img.alt = '';
       const url = this.getTileUrl(coords);
-      const finish = (src) => {
-        img.onload = () => done(null, img);
-        img.onerror = () => done(new Error('tile'), img);
-        img.src = src;
+
+      let settled = false;
+      const finish = (err) => {
+        if (settled) return;
+        settled = true;
+        img.onload = img.onerror = null;
+        done(err || null, img);
       };
-      if (pixelMode === 'blocked') { finish(url); return img; }
-      dbGet('tiles', url).then((hit) => {
-        if (hit && Date.now() - hit.t < S.tileTTLdays * 86400e3) {
-          img._blob = URL.createObjectURL(hit.blob);
-          finish(img._blob);
-          return;
-        }
-        return fetch(url, { mode: 'cors' }).then((r) => {
-          if (!r.ok) throw new Error('http ' + r.status);
-          return r.blob();
-        }).then((b) => {
-          dbPut('tiles', url, { blob: b, t: Date.now() });
-          img._blob = URL.createObjectURL(b);
-          finish(img._blob);
-        });
-      }).catch(() => {
-        if (pixelMode === 'unknown') {
-          pixelMode = 'blocked';
-          $('autoBtn').disabled = true;
-          $('autoBtn').title = 'Blocked by imagery CORS';
-        }
-        finish(url);
+      // Leaflet may abort this tile while we are between retries.
+      const gone = () => {
+        if (!img._cancelled) return false;
+        revokeTile(img);
+        return true;
+      };
+      const paint = (src) => new Promise((res, rej) => {
+        img.onload = () => res();
+        img.onerror = () => rej(new Error('decode failed'));
+        img.src = src;
       });
+      const useBlob = (b) => {
+        revokeTile(img);
+        img._blob = URL.createObjectURL(b);
+        return paint(img._blob);
+      };
+
+      (async () => {
+        // 1. Cache. A read or a corrupt entry must never be fatal — it is
+        //    only an optimisation, and letting it reject used to poison the
+        //    CORS diagnosis below.
+        if (S.tileTTLdays > 0) {
+          const hit = await dbGet('tiles', url).catch(() => null);
+          if (gone()) return;
+          if (hit && hit.blob && Date.now() - hit.t < S.tileTTLdays * 86400e3) {
+            try { await useBlob(hit.blob); return finish(); } catch (_) {
+              if (gone()) return;
+              dbDel('tiles', url);
+            }
+          }
+        }
+        if (gone()) return;
+
+        // 2. CORS fetch, so the bytes are cacheable and stay pixel-readable.
+        let corsShaped = false;
+        if (pixelMode !== 'blocked') {
+          try {
+            const r = await fetchOk(url, { mode: 'cors', tries: TILE_TRIES, timeout: 12000 });
+            const b = await r.blob();
+            if (gone()) return;
+            if (S.tileTTLdays > 0) dbPut('tiles', url, { blob: b, t: Date.now() }).catch(() => {});
+            await useBlob(b);
+            return finish();
+          } catch (err) {
+            if (gone()) return;
+            // Only a hard network rejection can mean "no CORS header".
+            // A timeout or a 5xx is the server being slow or unwell.
+            corsShaped = err.kind === 'network';
+          }
+        }
+
+        // 3. Plain <img>, which loads regardless of CORS but yields tiles
+        //    that cannot be cached or read back as pixels.
+        let last = null;
+        for (let i = 1; i <= TILE_TRIES; i++) {
+          if (i > 1) await sleep(backoff(i - 1, 500));
+          if (gone()) return;
+          try {
+            await paint(url);
+            if (corsShaped && pixelMode === 'unknown' && ++corsSignals >= 2) {
+              markPixelsBlocked('imagery server sends no CORS headers');
+            }
+            return finish();
+          } catch (err) { last = err; }
+        }
+        finish(last || new Error('tile failed after ' + TILE_TRIES + ' tries'));
+      })();
+
       return img;
     },
     _abortLoading() {
+      for (const k in this._tiles) {
+        const t = this._tiles[k];
+        if (t.coords.z !== this._tileZoom && t.el && !t.el.complete) t.el._cancelled = true;
+      }
       Base.prototype._abortLoading.call(this);
     },
   });
+}
+
+function revokeTile(el) {
+  if (el && el._blob) { URL.revokeObjectURL(el._blob); el._blob = null; }
 }
 
 const CachedTile = tileCacheMixin(L.TileLayer);
@@ -1651,8 +1833,11 @@ function initMap() {
   makeImagery();
   ctxLayer = L.layerGroup().addTo(map);
   vertexGroup = L.layerGroup().addTo(map);
+  // Marking the element cancelled stops any retry chain still in flight for
+  // a tile that has been panned off screen, which on a phone is most of them.
   map.on('tileunload', (e) => {
-    if (e.tile && e.tile._blob) { URL.revokeObjectURL(e.tile._blob); e.tile._blob = null; }
+    if (e.tile) e.tile._cancelled = true;
+    revokeTile(e.tile);
   });
 }
 
@@ -1921,8 +2106,7 @@ async function autoAlign() {
       '&STYLES=&LAYERS=' + encodeURIComponent(src.layers) +
       '&WIDTH=' + SZ + '&HEIGHT=' + SZ + '&BBOX=' + bbox.join(',');
 
-    const resp = await fetch(url, { mode: 'cors' });
-    if (!resp.ok) throw new Error('WMS ' + resp.status);
+    const resp = await fetchOk(url, { mode: 'cors', tries: 3, timeout: 20000 });
     const bmp = await createImageBitmap(await resp.blob());
     const cv = document.createElement('canvas');
     cv.width = SZ; cv.height = SZ;
@@ -1970,12 +2154,13 @@ async function autoAlign() {
     paintChrome();
     toast('Shifted ' + fmt(Math.hypot(dxm, dym), 1) + ' m  ·  z=' + fmt(z, 1) + '  ·  ' + fmt(gain, 2) + '× edge gain');
   } catch (err) {
-    if (String(err).match(/tainted|SecurityError|Failed to fetch|NetworkError/i)) {
-      pixelMode = 'blocked';
-      $('autoBtn').disabled = true;
-      toast('Imagery server blocks pixel reads (no CORS). Use the drift pad.', 'warn');
+    // A tainted canvas, or a network-shaped rejection that survived every
+    // retry, means CORS. A timeout or an HTTP status does not — those are
+    // worth reporting but auto-fit stays available.
+    if (/tainted|SecurityError/i.test(String(err)) || err.kind === 'network') {
+      markPixelsBlocked('imagery server blocks pixel reads');
     } else {
-      toast(String(err.message || err), 'warn');
+      toast('Auto-fit failed: ' + String(err.message || err), 'warn');
     }
   } finally {
     btn.classList.remove('busy');
