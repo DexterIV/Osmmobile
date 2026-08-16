@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#0b0f14">
+<title>Orto Review</title>
+<style>
+:root{
+  --ink:#0b0f14; --panel:#121a22; --panel2:#18222c; --line:#22303c;
+  --text:#e6edf3; --dim:#7d8fa0;
+  --plot:#ff2d95; --ctx:#22d3ee; --ochre:#e0a326;
+  --verify:#34d399; --strike:#f0504a;
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --bar:76px;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;overflow:hidden;background:var(--ink);color:var(--text);font-family:var(--sans)}
+body{display:flex;flex-direction:column;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}
+
+.strip{display:flex;align-items:center;gap:10px;height:42px;padding:0 12px;
+  background:var(--panel);border-bottom:1px solid var(--line);flex:0 0 auto;font-family:var(--mono);font-size:12px}
+.strip .count{font-weight:600;letter-spacing:.02em}
+.strip .sep{width:1px;height:16px;background:var(--line)}
+.strip .grow{flex:1;min-width:0}
+#locality{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tier{font-size:10px;letter-spacing:.14em;text-transform:uppercase;padding:3px 6px;border-radius:3px;border:1px solid}
+.tier.t0{color:var(--verify);border-color:#1d4f3e;background:#0f2119}
+.tier.t1{color:var(--ochre);border-color:#4d3c14;background:#1f1809}
+.tier.t2{color:var(--strike);border-color:#4d1f1d;background:#1f0e0d}
+#dist,#drift{color:var(--dim)}
+#drift{color:var(--ochre)}
+.strip button{background:none;border:1px solid var(--line);color:var(--dim);font-family:var(--mono);
+  font-size:11px;padding:4px 8px;border-radius:4px}
+.strip button.ok{color:var(--verify);border-color:#1d4f3e}
+.strip button:disabled{opacity:.35}
+
+#wrap{position:relative;flex:1;min-height:0}
+#map{position:absolute;inset:0;background:#0e141a;transition:transform .12s ease-out,opacity .12s}
+#map.flickR{transform:translateX(14px);opacity:.55}
+#map.flickL{transform:translateX(-14px);opacity:.55}
+#map.flickU{transform:translateY(-14px);opacity:.55}
+@media (prefers-reduced-motion:reduce){#map{transition:none}}
+.leaflet-container{background:#0e141a;font-family:var(--mono)}
+.leaflet-control-attribution{background:rgba(11,15,20,.7)!important;color:var(--dim)!important;font-size:9px}
+.leaflet-control-attribution a{color:var(--dim)!important}
+path.cand{filter:drop-shadow(0 0 4px rgba(255,45,149,.5))}
+.vtx i{display:block;width:14px;height:14px;margin:13px;border-radius:50%;
+  background:#fff;border:2.5px solid var(--plot);box-shadow:0 0 0 1px rgba(0,0,0,.5)}
+
+#pad{position:absolute;right:10px;bottom:10px;width:132px;
+  background:rgba(18,26,34,.93);border:1px solid var(--line);border-radius:12px;
+  padding:8px;backdrop-filter:blur(8px);display:grid;grid-template-columns:repeat(3,1fr);gap:5px}
+#pad button{height:34px;border:1px solid var(--line);background:var(--panel2);color:var(--text);
+  border-radius:7px;font-family:var(--mono);font-size:13px;display:grid;place-items:center}
+#pad button:active{background:var(--ochre);color:#1a1204;border-color:var(--ochre)}
+#pad .wide{grid-column:1/4}
+#stepBtn{color:var(--ochre);font-size:11px;letter-spacing:.04em}
+#autoBtn{grid-column:1/4;height:38px;font-size:11px;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--ochre);border-color:#4d3c14;background:#1c1608}
+#autoBtn:disabled{color:var(--dim);border-color:var(--line);background:var(--panel2)}
+#autoBtn.busy{animation:pulse .7s infinite alternate}
+@keyframes pulse{to{background:#33280d}}
+#padTools{position:absolute;right:10px;bottom:190px;display:flex;flex-direction:column;gap:6px}
+#padTools button{width:44px;height:44px;border-radius:10px;border:1px solid var(--line);
+  background:rgba(18,26,34,.93);color:var(--dim);font-family:var(--mono);font-size:11px;
+  backdrop-filter:blur(8px);letter-spacing:.02em}
+#padTools button.on{color:var(--plot);border-color:#5c1240;background:#220d18}
+#padTools button:disabled{opacity:.4}
+
+#tags{flex:0 0 auto;display:flex;gap:6px;padding:8px 10px;overflow-x:auto;
+  background:var(--panel);border-top:1px solid var(--line);scrollbar-width:none}
+#tags::-webkit-scrollbar{display:none}
+.chip{flex:0 0 auto;border:1px solid var(--line);background:var(--panel2);color:var(--text);
+  border-radius:5px;padding:5px 8px;font-family:var(--mono);font-size:11px;white-space:nowrap}
+.chip b{color:var(--ctx);font-weight:500;margin-right:5px}
+.chip:active{border-color:var(--strike);text-decoration:line-through;opacity:.6}
+.muted{color:var(--dim);font-family:var(--mono);font-size:11px;padding:5px}
+
+#bar{flex:0 0 auto;display:grid;grid-template-columns:1fr 1fr 1.3fr;height:var(--bar);
+  border-top:1px solid var(--line);background:var(--panel)}
+#bar button{border:none;background:none;color:var(--text);font-family:var(--sans);font-size:13px;
+  font-weight:500;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;
+  border-right:1px solid var(--line)}
+#bar button:last-child{border-right:none}
+#bar button span{font-family:var(--mono);font-size:9px;letter-spacing:.14em;color:var(--dim)}
+#rejectBtn{color:var(--strike)}
+#acceptBtn{color:var(--verify);background:#0f1c17}
+#rejectBtn:active{background:#1f0e0d}
+#laterBtn:active{background:var(--panel2)}
+#acceptBtn:active{background:#153026}
+
+#empty{display:none}
+#start{position:absolute;left:10px;right:10px;bottom:10px;z-index:500;display:none;
+  flex-direction:column;gap:8px;background:rgba(18,26,34,.95);border:1px solid var(--line);
+  border-radius:12px;padding:10px;backdrop-filter:blur(10px)}
+.startRow{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.startRow button{padding:14px 10px;border-radius:8px;border:1px solid var(--plot);color:var(--plot);
+  background:#1a0a12;font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase}
+.startRow button:active{background:#2a1020}
+.startNote{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;
+  color:var(--dim);line-height:1.4}
+.startNote span{flex:1}
+.startNote button{width:32px;height:28px;border-radius:6px;border:1px solid var(--line);
+  background:var(--panel2);color:var(--dim);flex:0 0 auto}
+.startMore{display:none;flex-direction:column;gap:8px;border-top:1px solid var(--line);padding-top:9px}
+#start.expanded .startMore{display:flex}
+#start.sandboxed{border-color:#4d3c14}
+#start.sandboxed .startNote{color:#f6d99a}
+.startRow button:disabled{opacity:.35;border-color:var(--line);color:var(--dim);background:var(--panel2)}
+.startMore p{margin:0;color:var(--dim);font-size:10.5px;line-height:1.5;font-family:var(--mono)}
+.ghost{padding:11px;border-radius:7px;border:1px solid var(--line);background:var(--panel2);
+  color:var(--text);font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase}
+
+#stage{display:none;position:absolute;top:52px;left:50%;transform:translateX(-50%);z-index:600;
+  background:rgba(11,15,20,.94);border:1px solid var(--line);border-radius:6px;padding:7px 14px;
+  font-family:var(--mono);font-size:11px;color:var(--ochre)}
+#toast{position:absolute;left:12px;right:12px;bottom:calc(var(--bar) + 52px);z-index:700;
+  background:#0d1620;border:1px solid var(--line);border-left:3px solid var(--verify);border-radius:7px;
+  padding:11px 13px;font-family:var(--mono);font-size:11.5px;line-height:1.45;
+  opacity:0;pointer-events:none;transform:translateY(8px);transition:.18s}
+#toast.show{opacity:1;transform:none}
+#toast.warn{border-left-color:var(--ochre);color:#f6d99a}
+
+#sheet{position:absolute;inset:0;z-index:800;background:rgba(6,9,12,.6);display:none}
+#sheet.open{display:block}
+#sheetBody{position:absolute;left:0;right:0;bottom:0;max-height:88%;overflow-y:auto;
+  background:var(--panel);border-top:1px solid var(--line);border-radius:14px 14px 0 0;padding:16px}
+#sheetBody h3{margin:0 0 4px;font-size:13px;letter-spacing:.02em}
+#sheetBody .hint{color:var(--dim);font-size:11px;line-height:1.5;margin:0 0 14px}
+label{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--dim);margin:12px 0 5px}
+input,select{width:100%;background:var(--ink);border:1px solid var(--line);color:var(--text);
+  border-radius:6px;padding:10px;font-family:var(--mono);font-size:12.5px}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.sheetActions{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:18px}
+.sheetActions button,#clearTiles,#clearDecisions{padding:12px;border-radius:7px;border:1px solid var(--line);
+  background:var(--panel2);color:var(--text);font-family:var(--mono);font-size:11px;letter-spacing:.1em;
+  text-transform:uppercase;width:100%}
+#sheetSave{border-color:#1d4f3e;color:var(--verify);background:#0f1c17}
+#clearDecisions{margin-top:8px;color:var(--strike)}
+#cacheInfo{font-family:var(--mono);font-size:11px;color:var(--dim);margin:8px 0 0}
+#diagBtn{margin-top:14px}
+#diagOut{display:none;margin:8px 0 0;padding:10px;background:var(--ink);border:1px solid var(--line);
+  border-radius:6px;font-family:var(--mono);font-size:10px;line-height:1.55;color:var(--text);
+  white-space:pre-wrap;word-break:break-word;overflow-x:auto}
+.note{border-left:2px solid var(--ochre);padding-left:10px;color:#c9a55e;font-size:11px;
+  line-height:1.5;margin:14px 0 0}
+</style>
+</head>
+<body>
+
+<div class="strip">
+  <span class="count" id="qCount">0 / 0</span>
+  <span class="sep"></span>
+  <span class="tier t0" id="tier">—</span>
+  <span id="dist"></span>
+  <span id="drift"></span>
+  <span class="grow" id="locality"></span>
+  <button id="userBtn">sign in</button>
+  <button id="uploadBtn" disabled>↑<span id="upCount">0</span></button>
+  <button id="gearBtn">⚙</button>
+</div>
+
+<div id="wrap">
+  <div id="map"></div>
+
+  <div id="padTools">
+    <button id="vertexToggle" title="Edit vertices">◇</button>
+    <button id="undoBtn" disabled title="Undo">↶</button>
+  </div>
+
+  <div id="pad">
+    <button data-dir="-1,1">↖</button>
+    <button data-dir="0,1">↑</button>
+    <button data-dir="1,1">↗</button>
+    <button data-dir="-1,0">←</button>
+    <button id="stepBtn"><span id="stepLbl">0.5 m</span></button>
+    <button data-dir="1,0">→</button>
+    <button data-dir="-1,-1">↙</button>
+    <button data-dir="0,-1">↓</button>
+    <button data-dir="1,-1">↘</button>
+    <button id="autoBtn">Auto-fit</button>
+  </div>
+
+  <div id="stage"></div>
+  <div id="toast"></div>
+
+  <div id="start">
+    <div class="startRow">
+      <button id="loadAreaBtn">Load this area</button>
+      <button id="randomBtn">Take me somewhere</button>
+    </div>
+    <div class="startNote">
+      <span id="emptyMsg">Pan to an area, or jump to somewhere with work waiting.</span>
+      <button id="moreBtn">⋯</button>
+    </div>
+    <div class="startMore">
+      <button class="ghost" id="pickBtn" disabled>Loading…</button>
+      <p>Or open a downloaded <b>.osm</b> package. Keys: <b>A</b> accept, <b>R</b> reject,
+      <b>L</b> later, <b>G</b> auto-fit, <b>Z</b> undo, <b>V</b> vertices, arrows nudge.</p>
+    </div>
+  </div>
+</div>
+
+<div id="tags"></div>
+
+<div id="bar">
+  <button id="rejectBtn">Reject<span>not there</span></button>
+  <button id="laterBtn">Later<span>survey</span></button>
+  <button id="acceptBtn">Accept<span>queue upload</span></button>
+</div>
+
+<input type="file" id="file" accept=".osm,.xml,.json,.geojson" style="display:none">
+
+<div id="sheet">
+  <div id="sheetBody">
+    <h3>Settings</h3>
+    <p class="hint">Everything is stored on this device. Nothing is uploaded until you press the up-arrow.</p>
+
+    <label>Data source</label>
+    <input id="sApiBase" placeholder="https://budynki.openstreetmap.org.pl">
+    <label style="display:flex;align-items:center;gap:9px;text-transform:none;letter-spacing:0;font-size:12px;font-family:var(--sans);color:var(--text)">
+      <input type="checkbox" id="sReport" style="width:auto;flex:0 0 auto">
+      Report rejects upstream
+    </label>
+    <p class="hint" style="margin-top:6px">Sends the rejected object's id back so it disappears for
+      everyone. Only enable this for things that genuinely should never be imported — not for
+      "cannot tell from this imagery".</p>
+
+    <label>Imagery</label>
+    <select id="sImagery">
+      <option value="orto-proxy">Ortophoto via budynki proxy (CORS-safe)</option>
+      <option value="orto-std">Ortophoto standard (GUGiK)</option>
+      <option value="orto-high">Ortophoto high-res (GUGiK)</option>
+      <option value="orto-archive">Ortophoto archival (GUGiK)</option>
+      <option value="osm">OSM Carto</option>
+      <option value="custom">Custom WMS</option>
+    </select>
+    <div class="row">
+      <div><label>Custom WMS URL</label><input id="sCustomUrl" placeholder="https://…/WMS"></div>
+      <div><label>Layer name</label><input id="sCustomLayers" placeholder="Raster"></div>
+    </div>
+
+    <div class="row">
+      <div><label>Tile cache, days</label><input id="sTileTTL" type="number" min="0" max="90"></div>
+      <div><label>OSM context, hours</label><input id="sCtxTTL" type="number" min="1" max="720"></div>
+    </div>
+    <p id="cacheInfo"></p>
+    <button id="clearTiles">Clear tile and context cache</button>
+
+    <div class="row">
+      <div><label>Auto-fit search, px</label><input id="sShift" type="number" min="2" max="24"></div>
+      <div><label>Clear radius, m</label><input id="sClear" type="number" min="5" max="200"></div>
+    </div>
+
+    <label>Changeset comment</label>
+    <input id="sComment">
+    <div class="row">
+      <div><label>Source tag</label><input id="sSource"></div>
+      <div><label>Objects per changeset</label><input id="sBatch" type="number" min="1" max="500"></div>
+    </div>
+
+    <label>Changeset hashtags</label>
+    <input id="sHashtags" placeholder="#orto-review">
+    <label style="display:flex;align-items:center;gap:9px;text-transform:none;letter-spacing:0;font-size:12px;font-family:var(--sans);color:var(--text)">
+      <input type="checkbox" id="sImportTag" style="width:auto;flex:0 0 auto">
+      Also tag changesets <b>import=yes</b>
+    </label>
+    <p class="hint" style="margin-top:6px">Leave off while you are reviewing each object by hand.
+      Turn it on only if you switch to unreviewed bulk upload.</p>
+
+    <label>OSM OAuth 2 client ID</label>
+    <input id="sClient" placeholder="from openstreetmap.org → OAuth 2 applications">
+    <p class="note">Register an app on openstreetmap.org with this page's exact URL as the redirect URI, scopes <b>read_prefs</b> and <b>write_api</b>, and tick "public client / PKCE". The URL is shown below — copy it from here.</p>
+    <label>This page's URL (use as redirect URI)</label>
+    <input id="sSelfUrl" readonly onclick="this.select()">
+
+    <button id="diagBtn">Run diagnostics</button>
+    <pre id="diagOut"></pre>
+
+    <button id="clearDecisions">Forget all decisions</button>
+
+    <div class="sheetActions">
+      <button id="sheetClose">Close</button>
+      <button id="sheetSave">Save</button>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,1306 @@
+const R = 6378137;
+const DEF = {
+  apiBase: 'https://budynki.openstreetmap.org.pl',
+  reportRejects: false,
+  imagery: 'orto-proxy',
+  customUrl: '',
+  customLayers: '',
+  tileTTLdays: 7,
+  ctxTTLhours: 24,
+  batchSize: 100,
+  comment: 'Buildings and addresses from BDOT10k/PRG',
+  source: 'BDOT10k;PRG',
+  hashtags: '#orto-review',
+  importTag: false,
+  clientId: '',
+  maxShift: 8,
+  driftStep: 0.5,
+  clearRadius: 50,
+  dropKeys: [],
+};
+
+const PRESETS = {
+  'orto-proxy': {
+    name: 'Ortophoto via budynki proxy',
+    url: 'https://budynki.openstreetmap.org.pl/orto',
+    layers: 'Raster',
+    attr: 'GUGiK / budynki.osm.org.pl',
+  },
+  'orto-std': {
+    name: 'Ortophoto standard',
+    url: 'https://mapy.geoportal.gov.pl/wss/service/PZGIK/ORTO/WMS/StandardResolution',
+    layers: 'Raster',
+    attr: 'GUGiK',
+  },
+  'orto-high': {
+    name: 'Ortophoto high-res',
+    url: 'https://mapy.geoportal.gov.pl/wss/service/PZGIK/ORTO/WMS/HighResolution',
+    layers: 'Raster',
+    attr: 'GUGiK',
+  },
+  'orto-archive': {
+    name: 'Ortophoto (archival)',
+    url: 'https://mapy.geoportal.gov.pl/wss/service/PZGIK/ORTO/WMS/StandardResolutionTime',
+    layers: 'Raster',
+    attr: 'GUGiK',
+  },
+  osm: { name: 'OSM Carto', xyz: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', attr: 'OpenStreetMap' },
+};
+
+let S = Object.assign({}, DEF);
+let wasm = null;
+let db = null;
+let pixelMode = 'unknown';
+
+const $ = (id) => document.getElementById(id);
+const fmt = (n, d = 1) => Number(n).toFixed(d);
+
+function toast(msg, kind) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'show' + (kind ? ' ' + kind : '');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => (t.className = ''), 3200);
+}
+
+function merc(lat, lon) {
+  const x = (lon * Math.PI / 180) * R;
+  const y = Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI / 180) / 2)) * R;
+  return [x, y];
+}
+function unmerc(x, y) {
+  const lon = (x / R) * 180 / Math.PI;
+  const lat = (2 * Math.atan(Math.exp(y / R)) - Math.PI / 2) * 180 / Math.PI;
+  return [lat, lon];
+}
+function hash(str) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = (h * 0x01000193) >>> 0;
+  }
+  return h.toString(36);
+}
+
+function idb() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open('ortoreview', 2);
+    r.onupgradeneeded = () => {
+      const d = r.result;
+      for (const s of ['kv', 'tiles', 'ctx', 'decisions', 'queue']) {
+        if (!d.objectStoreNames.contains(s)) d.createObjectStore(s);
+      }
+    };
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+function tx(store, mode) {
+  return db.transaction(store, mode).objectStore(store);
+}
+function dbGet(store, key) {
+  return new Promise((res, rej) => {
+    const r = tx(store, 'readonly').get(key);
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+function dbPut(store, key, val) {
+  return new Promise((res, rej) => {
+    const r = tx(store, 'readwrite').put(val, key);
+    r.onsuccess = () => res();
+    r.onerror = () => rej(r.error);
+  });
+}
+function dbDel(store, key) {
+  return new Promise((res) => {
+    const r = tx(store, 'readwrite').delete(key);
+    r.onsuccess = () => res();
+    r.onerror = () => res();
+  });
+}
+function dbAll(store) {
+  return new Promise((res, rej) => {
+    const out = [];
+    const r = tx(store, 'readonly').openCursor();
+    r.onsuccess = () => {
+      const c = r.result;
+      if (!c) return res(out);
+      out.push({ key: c.key, val: c.value });
+      c.continue();
+    };
+    r.onerror = () => rej(r.error);
+  });
+}
+function dbClear(store) {
+  return new Promise((res) => {
+    const r = tx(store, 'readwrite').clear();
+    r.onsuccess = () => res();
+    r.onerror = () => res();
+  });
+}
+
+async function evictExpired() {
+  const now = Date.now();
+  const tileMax = S.tileTTLdays * 86400e3;
+  const ctxMax = S.ctxTTLhours * 3600e3;
+  let n = 0;
+  for (const e of await dbAll('tiles')) {
+    if (now - e.val.t > tileMax) { await dbDel('tiles', e.key); n++; }
+  }
+  for (const e of await dbAll('ctx')) {
+    if (now - e.val.t > ctxMax) { await dbDel('ctx', e.key); n++; }
+  }
+  return n;
+}
+
+async function cacheStats() {
+  const t = await dbAll('tiles');
+  let bytes = 0;
+  for (const e of t) bytes += e.val.blob ? e.val.blob.size : 0;
+  const c = await dbAll('ctx');
+  return { tiles: t.length, bytes, ctx: c.length };
+}
+
+async function initWasm() {
+  const bin = Uint8Array.from(atob(WASM_B64), (c) => c.charCodeAt(0));
+  const mod = await WebAssembly.instantiate(bin, {
+    env: {
+      abort: (m, f, l, c) => { throw new Error('wasm abort ' + l + ':' + c); },
+      seed: () => Date.now(),
+    },
+  });
+  wasm = mod.instance.exports;
+}
+
+const W = {
+  bytes(str) {
+    const enc = new TextEncoder().encode(str);
+    const p = wasm.alloc(enc.length);
+    new Uint8Array(wasm.memory.buffer, p, enc.length).set(enc);
+    return [p, enc.length];
+  },
+  f64(arr) {
+    const p = wasm.alloc(arr.length * 8);
+    new Float64Array(wasm.memory.buffer, p, arr.length).set(arr);
+    return p;
+  },
+  view64(ptr, n) { return new Float64Array(wasm.memory.buffer, ptr, n); },
+  view32(ptr, n) { return new Int32Array(wasm.memory.buffer, ptr, n); },
+};
+
+let RAW = '';
+let candidates = [];
+let cursor = 0;
+let ctxIndexReady = false;
+
+function parseOsmXml(text) {
+  RAW = text;
+  const [p, len] = W.bytes(text);
+  wasm.setSource(p, len);
+  wasm.parse();
+  const nc = wasm.nodeCount();
+  const wc = wasm.wayCount();
+
+  const nid = W.view64(wasm.ptrNodeId(), nc);
+  const nlat = W.view64(wasm.ptrNodeLat(), nc);
+  const nlon = W.view64(wasm.ptrNodeLon(), nc);
+  const ntA = W.view32(wasm.ptrNodeTagA(), nc);
+  const ntB = W.view32(wasm.ptrNodeTagB(), nc);
+  const wA = W.view32(wasm.ptrWayNdA(), wc);
+  const wN = W.view32(wasm.ptrWayNdN(), wc);
+  const wtA = W.view32(wasm.ptrWayTagA(), wc);
+  const wtB = W.view32(wasm.ptrWayTagB(), wc);
+  const refs = W.view64(wasm.ptrRefs(), wasm.refsCount());
+
+  const byId = new Map();
+  for (let i = 0; i < nc; i++) byId.set(nid[i], i);
+
+  const usedInWay = new Set();
+  const out = [];
+
+  for (let i = 0; i < wc; i++) {
+    const n = wN[i];
+    if (n < 4) continue;
+    const ring = [];
+    for (let k = 0; k < n; k++) {
+      const idx = byId.get(refs[wA[i] + k]);
+      if (idx === undefined) { ring.length = 0; break; }
+      usedInWay.add(refs[wA[i] + k]);
+      ring.push([nlat[idx], nlon[idx]]);
+    }
+    if (ring.length < 4) continue;
+    const a = ring[0], z = ring[ring.length - 1];
+    if (a[0] === z[0] && a[1] === z[1]) ring.pop();
+    if (ring.length < 3) continue;
+    out.push({ kind: 'building', ring, tags: tagsIn(wtA[i], wtB[i]) });
+  }
+
+  for (let i = 0; i < nc; i++) {
+    if (ntB[i] <= ntA[i]) continue;
+    if (usedInWay.has(nid[i])) continue;
+    const tags = tagsIn(ntA[i], ntB[i]);
+    if (!Object.keys(tags).length) continue;
+    out.push({ kind: 'address', ring: [[nlat[i], nlon[i]]], tags });
+  }
+
+  wasm.release(p);
+  return out;
+}
+
+const TAG_RE = /<tag\s+k=(["'])(.*?)\1\s+v=(["'])([\s\S]*?)\3\s*\/?>/g;
+function tagsIn(a, b) {
+  if (b <= a) return {};
+  const slice = RAW.slice(a, b);
+  const t = {};
+  TAG_RE.lastIndex = 0;
+  let m;
+  while ((m = TAG_RE.exec(slice))) t[unesc(m[2])] = unesc(m[4]);
+  return t;
+}
+function unesc(s) {
+  return s.replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(+d))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&amp;/g, '&');
+}
+function esc(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+}
+
+function parseGeoJson(text) {
+  const gj = JSON.parse(text);
+  const feats = gj.type === 'FeatureCollection' ? gj.features : [gj];
+  const out = [];
+  for (const f of feats) {
+    if (!f.geometry) continue;
+    const tags = Object.assign({}, f.properties || {});
+    if (f.geometry.type === 'Polygon') {
+      const ring = f.geometry.coordinates[0].map(([x, y]) => [y, x]);
+      const a = ring[0], z = ring[ring.length - 1];
+      if (a[0] === z[0] && a[1] === z[1]) ring.pop();
+      out.push({ kind: 'building', ring, tags });
+    } else if (f.geometry.type === 'Point') {
+      out.push({ kind: 'address', ring: [[f.geometry.coordinates[1], f.geometry.coordinates[0]]], tags });
+    } else if (f.geometry.type === 'MultiPolygon') {
+      for (const poly of f.geometry.coordinates) {
+        const ring = poly[0].map(([x, y]) => [y, x]);
+        const a = ring[0], z = ring[ring.length - 1];
+        if (a[0] === z[0] && a[1] === z[1]) ring.pop();
+        out.push({ kind: 'building', ring, tags: Object.assign({}, tags) });
+      }
+    }
+  }
+  return out;
+}
+
+function centroid(ring) {
+  if (ring.length === 1) return ring[0].slice();
+  const la0 = ring[0][0], lo0 = ring[0][1];
+  const p = W.f64(ring.flatMap(([la, lo]) => [lo - lo0, la - la0]));
+  wasm.ringCentroid(p, ring.length);
+  const lon = lo0 + wasm.outFA(), lat = la0 + wasm.outFB();
+  wasm.release(p);
+  return [lat, lon];
+}
+
+function bboxOf(list) {
+  let s = 90, w = 180, n = -90, e = -180;
+  for (const c of list) {
+    for (const [la, lo] of c.ring) {
+      if (la < s) s = la; if (la > n) n = la;
+      if (lo < w) w = lo; if (lo > e) e = lo;
+    }
+  }
+  return [s, w, n, e];
+}
+
+function apiBase() { return (S.apiBase || DEF.apiBase).replace(/\/+$/, ''); }
+
+function tagsOf(props) {
+  if (!props) return {};
+  if (props.tags && typeof props.tags === 'object') return Object.assign({}, props.tags);
+  const t = Object.assign({}, props);
+  delete t.id;
+  return t;
+}
+
+function ringsOf(geom) {
+  if (!geom) return [];
+  if (geom.type === 'Polygon') return [geom.coordinates[0]];
+  if (geom.type === 'MultiPolygon') return geom.coordinates.map((p) => p[0]);
+  return [];
+}
+
+function classify(err) {
+  const m = String(err && err.message || err);
+  if (/Failed to fetch|NetworkError|Load failed/i.test(m)) {
+    return 'blocked or offline (CSP, CORS, DNS or no network — the browser will not say which)';
+  }
+  return m;
+}
+
+function envReport() {
+  const framed = window.self !== window.top;
+  const host = location.hostname || '(none)';
+  const sandboxed = framed || !host || host === 'localhost' && location.protocol === 'file:';
+  return {
+    origin: location.origin || '(opaque)',
+    host, protocol: location.protocol, framed,
+    secure: window.isSecureContext, sandboxed,
+  };
+}
+
+async function diagnose() {
+  const base = apiBase();
+  const out = [];
+  const e = envReport();
+  out.push('origin      ' + e.origin);
+  out.push('secure ctx  ' + e.secure + '   in iframe: ' + e.framed);
+  if (e.framed) {
+    out.push('');
+    out.push('!! Running inside an iframe. If this is a preview sandbox its');
+    out.push('   CSP will block every outbound request below. Deploy the file');
+    out.push('   to a real https origin and open it directly.');
+  }
+  out.push('');
+
+  const probe = async (label, url, check) => {
+    const t0 = performance.now();
+    try {
+      const r = await fetch(url);
+      const ms = (performance.now() - t0).toFixed(0);
+      if (!r.ok) { out.push(label.padEnd(12) + 'HTTP ' + r.status + '  ' + ms + 'ms'); return; }
+      const detail = check ? await check(r) : 'ok';
+      out.push(label.padEnd(12) + detail + '  ' + ms + 'ms');
+    } catch (err) {
+      out.push(label.padEnd(12) + 'FAIL  ' + classify(err));
+    }
+  };
+
+  await probe('random', base + '/random/', async (r) => {
+    const j = await r.json();
+    return 'ok  lat=' + Number(j.lat).toFixed(3) + ' lon=' + Number(j.lon).toFixed(3);
+  });
+  await probe('layers', base + '/layers/', async (r) => {
+    const j = await r.json();
+    return 'ok  ' + Object.keys(j.available_layers || {}).length + ' layers';
+  });
+  const q = 'xmin=21.00&ymin=52.20&xmax=21.02&ymax=52.22';
+  await probe('sc/build', base + '/sc/proposed_buildings?' + q, async (r) => {
+    const j = await r.json();
+    return 'ok  ' + (j.features || []).length + ' features';
+  });
+  await probe('sc/addr', base + '/sc/proposed_addresses?' + q, async (r) => {
+    const j = await r.json();
+    return 'ok  ' + (j.features || []).length + ' features';
+  });
+  await probe('josm_data', base + '/josm_data?filter_by=bbox&layers=addresses_to_import,buildings_to_import&' + q,
+    async (r) => 'ok  ' + ((await r.text()).length / 1024).toFixed(0) + ' KB xml');
+  await probe('overpass', 'https://overpass-api.de/api/interpreter?data=' +
+    encodeURIComponent('[out:json][timeout:10];node(52.20,21.00,52.201,21.001);out count;'),
+    async (r) => { await r.json(); return 'ok'; });
+
+  const src = imagerySource();
+  if (!src.xyz) {
+    const u = src.url + (src.url.includes('?') ? '&' : '?') +
+      'SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image/jpeg&STYLES=&LAYERS=' +
+      encodeURIComponent(src.layers) + '&WIDTH=32&HEIGHT=32&BBOX=2337000,6842000,2337100,6842100';
+    await probe('imagery', u, async (r) => {
+      const b = await r.blob();
+      try {
+        const bmp = await createImageBitmap(b);
+        const cv = document.createElement('canvas');
+        cv.width = cv.height = 32;
+        const g = cv.getContext('2d', { willReadFrequently: true });
+        g.drawImage(bmp, 0, 0);
+        g.getImageData(0, 0, 1, 1);
+        return 'ok  ' + (b.size / 1024).toFixed(1) + ' KB, pixels readable (auto-fit will work)';
+      } catch (err) {
+        return 'image ok but pixels blocked — auto-fit disabled';
+      }
+    });
+  }
+
+  $('diagOut').textContent = out.join('\n');
+  $('diagOut').style.display = 'block';
+}
+
+async function fetchArea(bounds) {
+  const q = 'xmin=' + bounds.getWest().toFixed(6) + '&ymin=' + bounds.getSouth().toFixed(6) +
+    '&xmax=' + bounds.getEast().toFixed(6) + '&ymax=' + bounds.getNorth().toFixed(6);
+  const base = apiBase();
+  const grab = (path) => fetch(base + path + '?' + q).then((r) => {
+    if (!r.ok) throw new Error(path + ' -> ' + r.status);
+    return r.json();
+  });
+  let bl, ad;
+  try {
+    [bl, ad] = await Promise.all([
+      grab('/sc/proposed_buildings'),
+      grab('/sc/proposed_addresses'),
+    ]);
+  } catch (err) {
+    const legacy = base + '/josm_data?filter_by=bbox&layers=addresses_to_import,buildings_to_import&' + q;
+    const r = await fetch(legacy).catch(() => null);
+    if (r && r.ok) {
+      toast('Primary endpoint failed, used josm_data instead (no reject reporting)', 'warn');
+      return parseOsmXml(await r.text());
+    }
+    throw err;
+  }
+  const out = [];
+  for (const f of (bl.features || [])) {
+    for (const r of ringsOf(f.geometry)) {
+      const ring = r.map(([x, y]) => [y, x]);
+      const a = ring[0], z = ring[ring.length - 1];
+      if (a && z && a[0] === z[0] && a[1] === z[1]) ring.pop();
+      if (ring.length < 3) continue;
+      out.push({ kind: 'building', ring, tags: tagsOf(f.properties), srcId: f.properties && f.properties.id });
+    }
+  }
+  for (const f of (ad.features || [])) {
+    if (!f.geometry || f.geometry.type !== 'Point') continue;
+    out.push({
+      kind: 'address',
+      ring: [[f.geometry.coordinates[1], f.geometry.coordinates[0]]],
+      tags: tagsOf(f.properties),
+      srcId: f.properties && f.properties.id,
+    });
+  }
+  return out;
+}
+
+async function loadArea() {
+  const b = map.getBounds();
+  const span = Math.max(b.getNorth() - b.getSouth(), b.getEast() - b.getWest());
+  if (map.getZoom() < 12 || span > 0.2) {
+    toast('Zoom in a bit — that area is too big to fetch', 'warn');
+    return;
+  }
+  setStage('Fetching candidates');
+  try {
+    const list = await fetchArea(b);
+    if (!list.length) {
+      setStage('');
+      toast('Nothing left to import in this area');
+      return;
+    }
+    await ingest(list, list.length + ' candidates here');
+  } catch (err) {
+    setStage('');
+    toast('Fetch failed: ' + classify(err) + ' — open settings and run diagnostics', 'warn');
+  }
+}
+
+async function loadRandom() {
+  setStage('Finding somewhere with work');
+  try {
+    const r = await fetch(apiBase() + '/random/');
+    if (!r.ok) throw new Error('random -> ' + r.status);
+    const j = await r.json();
+    map.setView([j.lat, j.lon], 17, { animate: false });
+    await loadArea();
+  } catch (err) {
+    setStage('');
+    toast('Could not reach the server: ' + classify(err) + ' — run diagnostics in settings', 'warn');
+  }
+}
+
+async function loadFile(file) {
+  const text = await file.text();
+  setStage('Parsing ' + file.name);
+  const t0 = performance.now();
+  let list;
+  if (/^\s*\{/.test(text)) list = parseGeoJson(text);
+  else list = parseOsmXml(text);
+  await ingest(list, list.length + ' candidates in ' + fmt(performance.now() - t0, 0) + ' ms');
+}
+
+async function ingest(list, label) {
+  const dec = new Map();
+  for (const e of await dbAll('decisions')) dec.set(e.key, e.val.verdict);
+
+  for (const c of list) {
+    c.centroid = centroid(c.ring);
+    c.key = c.srcId
+      ? (c.kind === 'building' ? 'bdot:' : 'prg:') + c.srcId
+      : hash(c.kind + '|' + c.centroid[0].toFixed(6) + ',' + c.centroid[1].toFixed(6) + '|' +
+        (c.tags['addr:housenumber'] || '') + (c.tags['addr:street'] || ''));
+    c.orig = c.ring.map((p) => p.slice());
+  }
+  const before = list.length;
+  candidates = list.filter((c) => dec.get(c.key) !== 'reject' && dec.get(c.key) !== 'accept');
+  const skipped = before - candidates.length;
+
+  toast(label + (skipped ? ', ' + skipped + ' already decided' : ''));
+  setStage('Fetching OSM context');
+  await buildContext();
+  orderCandidates();
+  cursor = 0;
+  $('start').style.display = 'none';
+  setStage('');
+  show();
+}
+
+async function reportReject(c) {
+  if (!S.reportRejects || !c.srcId) return;
+  const path = c.kind === 'building' ? '/sc/proposed_buildings/report' : '/sc/proposed_addresses/report';
+  try {
+    await fetch(apiBase() + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify([String(c.srcId)]),
+    });
+  } catch (err) {
+    console.warn('reject report failed', err);
+  }
+}
+
+async function buildContext() {
+  if (!candidates.length) return;
+  const [s, w, n, e] = bboxOf(candidates);
+  const key = [s, w, n, e].map((v) => v.toFixed(3)).join(',');
+  let data = await dbGet('ctx', key);
+  if (!data || Date.now() - data.t > S.ctxTTLhours * 3600e3) {
+    const q = `[out:json][timeout:90];(way["building"](${s},${w},${n},${e});relation["building"](${s},${w},${n},${e}););out center;`;
+    try {
+      const r = await fetch('https://overpass-api.de/api/interpreter', {
+        method: 'POST',
+        body: 'data=' + encodeURIComponent(q),
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      });
+      if (!r.ok) throw new Error('overpass ' + r.status);
+      const j = await r.json();
+      data = { t: Date.now(), pts: j.elements.filter((el) => el.center || el.lat).map((el) => [el.center ? el.center.lat : el.lat, el.center ? el.center.lon : el.lon]) };
+      await dbPut('ctx', key, data);
+    } catch (err) {
+      toast('OSM context unavailable, order will be file order', 'warn');
+      ctxIndexReady = false;
+      return;
+    }
+  }
+  if (!data.pts.length) { ctxIndexReady = false; return; }
+  const lat = W.f64(data.pts.map((p) => p[0]));
+  const lon = W.f64(data.pts.map((p) => p[1]));
+  wasm.indexBuild(lat, lon, data.pts.length, 0.002);
+  ctxIndexReady = true;
+  ctxPts = data.pts;
+}
+let ctxPts = [];
+
+function orderCandidates() {
+  for (const c of candidates) {
+    c.dist = ctxIndexReady ? wasm.nearestMeters(c.centroid[0], c.centroid[1], 400) : 1e9;
+    c.tier = c.dist > S.clearRadius ? 0 : c.dist > 8 ? 1 : 2;
+  }
+  candidates.sort((a, b) => (a.tier - b.tier) || (a.centroid[0] - b.centroid[0]) || (a.centroid[1] - b.centroid[1]));
+}
+
+let map, imgLayer, ctxLayer, shape, vertexGroup, undoStack = [];
+
+function imagerySource() {
+  if (S.imagery === 'custom') return { url: S.customUrl, layers: S.customLayers, attr: 'custom' };
+  return PRESETS[S.imagery];
+}
+
+function makeImagery() {
+  const src = imagerySource();
+  if (imgLayer) map.removeLayer(imgLayer);
+  let fails = 0;
+  const onErr = () => {
+    if (++fails === 6) toast('Imagery is not loading. Open settings and pick another source.', 'warn');
+  };
+  if (src.xyz) {
+    imgLayer = cachedTileLayer(src.xyz, { maxZoom: 21, attribution: src.attr });
+  } else {
+    imgLayer = cachedWmsLayer(src.url, {
+      layers: src.layers, format: 'image/jpeg', transparent: false,
+      version: '1.3.0', maxZoom: 21, attribution: src.attr,
+    });
+  }
+  imgLayer.on('tileerror', onErr);
+  imgLayer.addTo(map);
+  imgLayer.bringToBack();
+}
+
+function tileCacheMixin(Base) {
+  return Base.extend({
+    createTile(coords, done) {
+      const img = document.createElement('img');
+      img.setAttribute('role', 'presentation');
+      img.alt = '';
+      const url = this.getTileUrl(coords);
+      const finish = (src) => {
+        img.onload = () => done(null, img);
+        img.onerror = () => done(new Error('tile'), img);
+        img.src = src;
+      };
+      if (pixelMode === 'blocked') { finish(url); return img; }
+      dbGet('tiles', url).then((hit) => {
+        if (hit && Date.now() - hit.t < S.tileTTLdays * 86400e3) {
+          img._blob = URL.createObjectURL(hit.blob);
+          finish(img._blob);
+          return;
+        }
+        return fetch(url, { mode: 'cors' }).then((r) => {
+          if (!r.ok) throw new Error('http ' + r.status);
+          return r.blob();
+        }).then((b) => {
+          dbPut('tiles', url, { blob: b, t: Date.now() });
+          img._blob = URL.createObjectURL(b);
+          finish(img._blob);
+        });
+      }).catch(() => {
+        if (pixelMode === 'unknown') {
+          pixelMode = 'blocked';
+          $('autoBtn').disabled = true;
+          $('autoBtn').title = 'Blocked by imagery CORS';
+        }
+        finish(url);
+      });
+      return img;
+    },
+    _abortLoading() {
+      Base.prototype._abortLoading.call(this);
+    },
+  });
+}
+
+const CachedTile = tileCacheMixin(L.TileLayer);
+const CachedWms = tileCacheMixin(L.TileLayer.WMS);
+const cachedTileLayer = (u, o) => new CachedTile(u, o);
+const cachedWmsLayer = (u, o) => new CachedWms(u, o);
+
+function initMap() {
+  map = L.map('map', {
+    zoomControl: false, attributionControl: true, preferCanvas: false,
+    maxZoom: 22, doubleClickZoom: false, keyboard: false,
+  }).setView([52.2, 21.0], 18);
+  makeImagery();
+  ctxLayer = L.layerGroup().addTo(map);
+  vertexGroup = L.layerGroup().addTo(map);
+  map.on('tileunload', (e) => {
+    if (e.tile && e.tile._blob) { URL.revokeObjectURL(e.tile._blob); e.tile._blob = null; }
+  });
+}
+
+function cur() { return candidates[cursor]; }
+
+function setControls(on) {
+  for (const el of document.querySelectorAll('#pad button, #padTools button, #bar button')) {
+    el.disabled = !on;
+  }
+  if (on) {
+    $('undoBtn').disabled = !undoStack.length;
+    if (pixelMode === 'blocked') $('autoBtn').disabled = true;
+  }
+}
+
+function show() {
+  const c = cur();
+  if (!c) {
+    setControls(false);
+    $('start').style.display = 'flex';
+    $('emptyMsg').textContent = candidates.length
+      ? 'Queue finished — ' + candidates.length + ' reviewed'
+      : 'Nothing queued';
+    return;
+  }
+  setControls(true);
+  undoStack = [];
+  drawShape();
+  drawContext();
+  fitShape();
+  paintChrome();
+  paintTags();
+}
+
+function drawShape() {
+  const c = cur();
+  if (shape) { map.removeLayer(shape); shape = null; }
+  vertexGroup.clearLayers();
+  if (!c) return;
+  if (c.kind === 'building') {
+    shape = L.polygon(c.ring, {
+      color: '#ff2d95', weight: 2.5, fillColor: '#ff2d95', fillOpacity: 0.12,
+      className: 'cand',
+    }).addTo(map);
+    attachShapeDrag();
+    drawVertices();
+  } else {
+    shape = L.circleMarker(c.ring[0], {
+      color: '#ff2d95', weight: 3, radius: 11, fillColor: '#ff2d95', fillOpacity: 0.25,
+    }).addTo(map);
+    attachPointDrag();
+  }
+}
+
+function drawVertices() {
+  const c = cur();
+  vertexGroup.clearLayers();
+  if (!c || c.kind !== 'building') return;
+  if (!$('vertexToggle').classList.contains('on')) return;
+  c.ring.forEach((pt, i) => {
+    const m = L.marker(pt, {
+      draggable: true, keyboard: false,
+      icon: L.divIcon({ className: 'vtx', html: '<i></i>', iconSize: [40, 40], iconAnchor: [20, 20] }),
+    }).addTo(vertexGroup);
+    m.on('dragstart', () => pushUndo());
+    m.on('drag', (e) => {
+      const ll = e.target.getLatLng();
+      c.ring[i] = [ll.lat, ll.lng];
+      shape.setLatLngs(c.ring);
+    });
+    m.on('dragend', () => { c.moved = true; paintChrome(); });
+  });
+}
+
+function attachShapeDrag() {
+  const el = shape.getElement();
+  if (!el) return;
+  let start = null, orig = null;
+  el.style.cursor = 'move';
+  el.addEventListener('pointerdown', (ev) => {
+    if ($('vertexToggle').classList.contains('on')) return;
+    ev.stopPropagation();
+    el.setPointerCapture(ev.pointerId);
+    map.dragging.disable();
+    pushUndo();
+    start = map.mouseEventToContainerPoint(ev);
+    orig = cur().ring.map((p) => p.slice());
+  });
+  el.addEventListener('pointermove', (ev) => {
+    if (!start) return;
+    const now = map.mouseEventToContainerPoint(ev);
+    const d = now.subtract(start);
+    const c = cur();
+    c.ring = orig.map(([la, lo]) => {
+      const p = map.latLngToContainerPoint([la, lo]).add(d);
+      const ll = map.containerPointToLatLng(p);
+      return [ll.lat, ll.lng];
+    });
+    shape.setLatLngs(c.ring);
+  });
+  const end = (ev) => {
+    if (!start) return;
+    start = null;
+    map.dragging.enable();
+    try { el.releasePointerCapture(ev.pointerId); } catch (e) {}
+    cur().moved = true;
+    drawVertices();
+    paintChrome();
+  };
+  el.addEventListener('pointerup', end);
+  el.addEventListener('pointercancel', end);
+}
+
+function attachPointDrag() {
+  const el = shape.getElement();
+  if (!el) return;
+  let dragging = false;
+  el.addEventListener('pointerdown', (ev) => {
+    ev.stopPropagation();
+    el.setPointerCapture(ev.pointerId);
+    map.dragging.disable();
+    pushUndo();
+    dragging = true;
+  });
+  el.addEventListener('pointermove', (ev) => {
+    if (!dragging) return;
+    const ll = map.containerPointToLatLng(map.mouseEventToContainerPoint(ev));
+    cur().ring[0] = [ll.lat, ll.lng];
+    shape.setLatLng(ll);
+  });
+  const end = (ev) => {
+    if (!dragging) return;
+    dragging = false;
+    map.dragging.enable();
+    try { el.releasePointerCapture(ev.pointerId); } catch (e) {}
+    cur().moved = true;
+    paintChrome();
+  };
+  el.addEventListener('pointerup', end);
+  el.addEventListener('pointercancel', end);
+}
+
+function pushUndo() {
+  undoStack.push(cur().ring.map((p) => p.slice()));
+  if (undoStack.length > 40) undoStack.shift();
+  $('undoBtn').disabled = false;
+}
+
+function undo() {
+  if (!undoStack.length || !cur()) return;
+  const c = cur();
+  c.ring = undoStack.pop();
+  if (c.kind === 'building') { shape.setLatLngs(c.ring); drawVertices(); }
+  else shape.setLatLng(c.ring[0]);
+  $('undoBtn').disabled = !undoStack.length;
+  paintChrome();
+}
+
+function nudge(dxm, dym) {
+  const c = cur();
+  if (!c) return;
+  pushUndo();
+  const mLat = 111320;
+  const mLon = 111320 * Math.cos(c.centroid[0] * Math.PI / 180);
+  c.ring = c.ring.map(([la, lo]) => [la + dym / mLat, lo + dxm / mLon]);
+  if (c.kind === 'building') { shape.setLatLngs(c.ring); drawVertices(); }
+  else shape.setLatLng(c.ring[0]);
+  c.moved = true;
+  paintChrome();
+}
+
+function driftMeters() {
+  const c = cur();
+  if (!c) return 0;
+  const a = centroid(c.orig), b = centroid(c.ring);
+  const mLat = 111320;
+  const mLon = 111320 * Math.cos(a[0] * Math.PI / 180);
+  return Math.hypot((b[0] - a[0]) * mLat, (b[1] - a[1]) * mLon);
+}
+
+function drawContext() {
+  ctxLayer.clearLayers();
+  const c = cur();
+  if (!c || !ctxPts.length) return;
+  const mLat = 111320;
+  const mLon = 111320 * Math.cos(c.centroid[0] * Math.PI / 180);
+  for (const [la, lo] of ctxPts) {
+    const d = Math.hypot((la - c.centroid[0]) * mLat, (lo - c.centroid[1]) * mLon);
+    if (d > 120) continue;
+    L.circleMarker([la, lo], {
+      radius: 5, color: '#22d3ee', weight: 2, fillOpacity: 0.35, fillColor: '#22d3ee',
+      interactive: false,
+    }).addTo(ctxLayer);
+  }
+}
+
+function fitShape() {
+  const c = cur();
+  if (!c) return;
+  if (c.kind === 'building') {
+    map.fitBounds(L.latLngBounds(c.ring).pad(1.4), { animate: false, maxZoom: 20 });
+  } else {
+    map.setView(c.ring[0], 19, { animate: false });
+  }
+}
+
+function paintChrome() {
+  const c = cur();
+  $('qCount').textContent = (cursor + 1) + ' / ' + candidates.length;
+  $('locality').textContent = c ? (c.tags['addr:city'] || c.tags['addr:place'] || c.kind) : '';
+  const tierLbl = ['clear', 'near', 'overlap'][c ? c.tier : 0];
+  $('tier').textContent = tierLbl;
+  $('tier').className = 'tier t' + (c ? c.tier : 0);
+  $('dist').textContent = c && c.dist < 1e8 ? fmt(c.dist, 0) + ' m' : 'no OSM near';
+  const d = c ? driftMeters() : 0;
+  $('drift').textContent = d > 0.05 ? '+' + fmt(d, 1) + ' m moved' : '';
+  $('stepLbl').textContent = fmt(S.driftStep, 2).replace(/0$/, '') + ' m';
+}
+
+function paintTags() {
+  const c = cur();
+  const box = $('tags');
+  box.innerHTML = '';
+  if (!c) return;
+  const keys = Object.keys(c.tags).filter((k) => !S.dropKeys.includes(k));
+  for (const k of keys) {
+    const chip = document.createElement('button');
+    chip.className = 'chip';
+    chip.innerHTML = '<b>' + esc(k) + '</b>' + esc(c.tags[k]);
+    chip.onclick = () => {
+      delete c.tags[k];
+      paintTags();
+    };
+    box.appendChild(chip);
+  }
+  if (!keys.length) {
+    const s = document.createElement('span');
+    s.className = 'muted';
+    s.textContent = 'No tags';
+    box.appendChild(s);
+  }
+}
+
+async function autoAlign() {
+  const c = cur();
+  if (!c) return;
+  if (c.kind !== 'building') { toast('Auto-fit works on outlines only'); return; }
+  const btn = $('autoBtn');
+  btn.classList.add('busy');
+  try {
+    const src = imagerySource();
+    if (src.xyz) throw new Error('Auto-align needs a WMS source, not XYZ tiles');
+    const cen = centroid(c.ring);
+    let ext = 0;
+    for (const [la, lo] of c.ring) {
+      ext = Math.max(ext, Math.hypot((la - cen[0]) * 111320, (lo - cen[1]) * 111320 * Math.cos(cen[0] * Math.PI / 180)));
+    }
+    const half = Math.max(ext * 2.2, 32);
+    const [cx, cy] = merc(cen[0], cen[1]);
+    const scale = 1 / Math.cos(cen[0] * Math.PI / 180);
+    const hm = half * scale;
+    const bbox = [cx - hm, cy - hm, cx + hm, cy + hm];
+    const SZ = 384;
+    const url = src.url + (src.url.includes('?') ? '&' : '?') +
+      'SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image/jpeg' +
+      '&STYLES=&LAYERS=' + encodeURIComponent(src.layers) +
+      '&WIDTH=' + SZ + '&HEIGHT=' + SZ + '&BBOX=' + bbox.join(',');
+
+    const resp = await fetch(url, { mode: 'cors' });
+    if (!resp.ok) throw new Error('WMS ' + resp.status);
+    const bmp = await createImageBitmap(await resp.blob());
+    const cv = document.createElement('canvas');
+    cv.width = SZ; cv.height = SZ;
+    const g = cv.getContext('2d', { willReadFrequently: true });
+    g.drawImage(bmp, 0, 0, SZ, SZ);
+    const data = g.getImageData(0, 0, SZ, SZ).data;
+
+    const rp = wasm.alloc(data.length);
+    new Uint8Array(wasm.memory.buffer, rp, data.length).set(data);
+    wasm.gradientFrom(rp, SZ, SZ);
+    wasm.release(rp);
+
+    const toPx = ([la, lo]) => {
+      const [x, y] = merc(la, lo);
+      return [(x - bbox[0]) / (bbox[2] - bbox[0]) * SZ, (bbox[3] - y) / (bbox[3] - bbox[1]) * SZ];
+    };
+    let ringPx = c.ring.map(toPx);
+    let p = W.f64(ringPx.flat());
+    wasm.edgeSamples(p, c.ring.length, 1.0);
+    wasm.alignOffset(S.maxShift, 1.0);
+    let ox = wasm.outFA(), oy = wasm.outFB();
+    const z = wasm.outIA() / 100;
+    const gain = wasm.outIB() / 100;
+    wasm.release(p);
+
+    ringPx = ringPx.map(([x, y]) => [x + ox, y + oy]);
+    p = W.f64(ringPx.flat());
+    wasm.edgeSamples(p, c.ring.length, 1.0);
+    wasm.alignOffset(3, 0.25);
+    ox += wasm.outFA(); oy += wasm.outFB();
+    wasm.release(p);
+
+    if (z < 1.6 || gain < 1.03) {
+      toast('Low confidence (z=' + fmt(z, 1) + '), left as-is — nudge by hand', 'warn');
+      return;
+    }
+    const mppx = (bbox[2] - bbox[0]) / SZ / scale;
+    pushUndo();
+    const mLat = 111320, mLon = 111320 * Math.cos(cen[0] * Math.PI / 180);
+    const dxm = ox * mppx, dym = -oy * mppx;
+    c.ring = c.ring.map(([la, lo]) => [la + dym / mLat, lo + dxm / mLon]);
+    c.moved = true;
+    shape.setLatLngs(c.ring);
+    drawVertices();
+    paintChrome();
+    toast('Shifted ' + fmt(Math.hypot(dxm, dym), 1) + ' m  ·  z=' + fmt(z, 1) + '  ·  ' + fmt(gain, 2) + '× edge gain');
+  } catch (err) {
+    if (String(err).match(/tainted|SecurityError|Failed to fetch|NetworkError/i)) {
+      pixelMode = 'blocked';
+      $('autoBtn').disabled = true;
+      toast('Imagery server blocks pixel reads (no CORS). Use the drift pad.', 'warn');
+    } else {
+      toast(String(err.message || err), 'warn');
+    }
+  } finally {
+    btn.classList.remove('busy');
+  }
+}
+
+async function verdict(kind) {
+  const c = cur();
+  if (!c) return;
+  await dbPut('decisions', c.key, { verdict: kind, t: Date.now() });
+  if (kind === 'reject') reportReject(c);
+  if (kind === 'accept') {
+    await dbPut('queue', c.key, {
+      kind: c.kind, ring: c.ring, tags: c.tags, t: Date.now(),
+      moved: !!c.moved, city: c.tags['addr:city'] || '',
+    });
+  }
+  const el = $('map');
+  el.classList.add(kind === 'accept' ? 'flickR' : kind === 'reject' ? 'flickL' : 'flickU');
+  setTimeout(() => el.classList.remove('flickR', 'flickL', 'flickU'), 130);
+  cursor++;
+  await refreshQueueBadge();
+  show();
+}
+
+async function refreshQueueBadge() {
+  const q = await dbAll('queue');
+  $('upCount').textContent = q.length;
+  $('uploadBtn').disabled = !q.length;
+}
+
+function osmChange(items, changesetId) {
+  let id = -1;
+  const create = [];
+  for (const it of items) {
+    const tags = Object.entries(it.tags).filter(([k]) => !S.dropKeys.includes(k))
+      .map(([k, v]) => `<tag k="${esc(k)}" v="${esc(v)}"/>`).join('');
+    if (it.kind === 'address') {
+      const [la, lo] = it.ring[0];
+      create.push(`<node id="${id--}" lat="${la.toFixed(7)}" lon="${lo.toFixed(7)}" changeset="${changesetId}" version="0">${tags}</node>`);
+    } else {
+      const ids = [];
+      for (const [la, lo] of it.ring) {
+        const nid = id--;
+        ids.push(nid);
+        create.push(`<node id="${nid}" lat="${la.toFixed(7)}" lon="${lo.toFixed(7)}" changeset="${changesetId}" version="0"/>`);
+      }
+      const nds = ids.concat([ids[0]]).map((r) => `<nd ref="${r}"/>`).join('');
+      create.push(`<way id="${id--}" changeset="${changesetId}" version="0">${nds}${tags}</way>`);
+    }
+  }
+  return `<osmChange version="0.6" generator="orto-review"><create>${create.join('')}</create></osmChange>`;
+}
+
+const OSM = 'https://www.openstreetmap.org';
+const API = OSM + '/api/0.6';
+
+function b64url(buf) {
+  return btoa(String.fromCharCode(...new Uint8Array(buf)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function login() {
+  if (!S.clientId) { openSettings(); toast('Paste an OAuth client ID first', 'warn'); return; }
+  const verifier = b64url(crypto.getRandomValues(new Uint8Array(48)));
+  const challenge = b64url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
+  sessionStorage.setItem('pkce', verifier);
+  const redirect = location.href.split('?')[0].split('#')[0];
+  location.href = OSM + '/oauth2/authorize?client_id=' + encodeURIComponent(S.clientId) +
+    '&redirect_uri=' + encodeURIComponent(redirect) + '&response_type=code' +
+    '&scope=' + encodeURIComponent('read_prefs write_api') +
+    '&code_challenge=' + challenge + '&code_challenge_method=S256';
+}
+
+async function finishLogin() {
+  const p = new URLSearchParams(location.search);
+  const code = p.get('code');
+  if (!code) return;
+  const verifier = sessionStorage.getItem('pkce');
+  const redirect = location.href.split('?')[0];
+  history.replaceState({}, '', redirect);
+  if (!verifier) return;
+  const body = new URLSearchParams({
+    grant_type: 'authorization_code', code, redirect_uri: redirect,
+    client_id: S.clientId, code_verifier: verifier,
+  });
+  const r = await fetch(OSM + '/oauth2/token', { method: 'POST', body });
+  if (!r.ok) { toast('Sign-in failed: ' + r.status, 'warn'); return; }
+  const j = await r.json();
+  await dbPut('kv', 'token', j.access_token);
+  sessionStorage.removeItem('pkce');
+  paintUser();
+  toast('Signed in to OpenStreetMap');
+}
+
+async function token() { return await dbGet('kv', 'token'); }
+
+async function paintUser() {
+  const t = await token();
+  $('userBtn').textContent = t ? 'signed in' : 'sign in';
+  $('userBtn').className = t ? 'ok' : '';
+}
+
+async function uploadQueue() {
+  const t = await token();
+  if (!t) { toast('Sign in first', 'warn'); return; }
+  const all = (await dbAll('queue')).map((e) => Object.assign({ key: e.key }, e.val));
+  if (!all.length) return;
+  all.sort((a, b) => (a.city || '').localeCompare(b.city || '') || a.ring[0][0] - b.ring[0][0]);
+  const H = { Authorization: 'Bearer ' + t, 'Content-Type': 'text/xml' };
+  let done = 0;
+  setStage('Uploading 0 / ' + all.length);
+  for (let i = 0; i < all.length; i += S.batchSize) {
+    const batch = all.slice(i, i + S.batchSize);
+    const city = batch[0].city || 'Poland';
+    const extra = (S.hashtags ? `<tag k="hashtags" v="${esc(S.hashtags)}"/>` : '') +
+      (S.importTag ? '<tag k="import" v="yes"/>' : '') +
+      `<tag k="review_count" v="${batch.length}"/>`;
+    const cs = `<osm><changeset>
+      <tag k="created_by" v="orto-review"/>
+      <tag k="comment" v="${esc(S.comment + ' — ' + city)}"/>
+      <tag k="source" v="${esc(S.source)}"/>
+      ${extra}
+    </changeset></osm>`;
+    try {
+      let r = await fetch(API + '/changeset/create', { method: 'PUT', headers: H, body: cs });
+      if (!r.ok) throw new Error('changeset ' + r.status + ' ' + (await r.text()).slice(0, 120));
+      const id = (await r.text()).trim();
+      r = await fetch(API + '/changeset/' + id + '/upload', {
+        method: 'POST', headers: H, body: osmChange(batch, id),
+      });
+      if (!r.ok) throw new Error('upload ' + r.status + ' ' + (await r.text()).slice(0, 200));
+      await fetch(API + '/changeset/' + id + '/close', { method: 'PUT', headers: H });
+      for (const b of batch) await dbDel('queue', b.key);
+      done += batch.length;
+      setStage('Uploading ' + done + ' / ' + all.length);
+    } catch (err) {
+      toast('Upload stopped: ' + (err.message || err), 'warn');
+      break;
+    }
+  }
+  setStage('');
+  await refreshQueueBadge();
+  if (done) toast('Uploaded ' + done + ' objects');
+}
+
+function setStage(s) {
+  $('stage').textContent = s;
+  $('stage').style.display = s ? 'block' : 'none';
+}
+
+function openSettings() { $('sheet').classList.add('open'); paintSettings(); }
+function closeSettings() { $('sheet').classList.remove('open'); }
+
+function paintSettings() {
+  $('sImagery').value = S.imagery;
+  $('sCustomUrl').value = S.customUrl;
+  $('sCustomLayers').value = S.customLayers;
+  $('sTileTTL').value = S.tileTTLdays;
+  $('sCtxTTL').value = S.ctxTTLhours;
+  $('sBatch').value = S.batchSize;
+  $('sComment').value = S.comment;
+  $('sSource').value = S.source;
+  $('sHashtags').value = S.hashtags;
+  $('sImportTag').checked = !!S.importTag;
+  $('sClient').value = S.clientId;
+  $('sApiBase').value = S.apiBase;
+  $('sReport').checked = !!S.reportRejects;
+  $('sSelfUrl').value = location.href.split('?')[0].split('#')[0];
+  $('sShift').value = S.maxShift;
+  $('sClear').value = S.clearRadius;
+  cacheStats().then((c) => {
+    $('cacheInfo').textContent = c.tiles + ' tiles, ' + fmt(c.bytes / 1048576, 1) + ' MB, ' + c.ctx + ' context sets';
+  });
+}
+
+async function saveSettings() {
+  S.imagery = $('sImagery').value;
+  S.customUrl = $('sCustomUrl').value.trim();
+  S.customLayers = $('sCustomLayers').value.trim();
+  S.tileTTLdays = +$('sTileTTL').value || DEF.tileTTLdays;
+  S.ctxTTLhours = +$('sCtxTTL').value || DEF.ctxTTLhours;
+  S.batchSize = Math.max(1, Math.min(500, +$('sBatch').value || DEF.batchSize));
+  S.comment = $('sComment').value;
+  S.source = $('sSource').value;
+  S.hashtags = $('sHashtags').value.trim();
+  S.importTag = $('sImportTag').checked;
+  S.clientId = $('sClient').value.trim();
+  S.apiBase = $('sApiBase').value.trim() || DEF.apiBase;
+  S.reportRejects = $('sReport').checked;
+  S.maxShift = Math.max(2, Math.min(24, +$('sShift').value || DEF.maxShift));
+  S.clearRadius = Math.max(5, +$('sClear').value || DEF.clearRadius);
+  await dbPut('kv', 'settings', S);
+  makeImagery();
+  if (candidates.length) { orderCandidates(); paintChrome(); }
+  closeSettings();
+  toast('Settings saved');
+}
+
+function bindUI() {
+  $('file').onchange = (e) => { if (e.target.files[0]) loadFile(e.target.files[0]); };
+  $('pickBtn').onclick = () => $('file').click();
+  $('loadAreaBtn').onclick = loadArea;
+  $('randomBtn').onclick = loadRandom;
+  $('moreBtn').onclick = () => $('start').classList.toggle('expanded');
+  $('diagBtn').onclick = () => { $('diagOut').textContent = 'Running…'; $('diagOut').style.display = 'block'; diagnose(); };
+  $('rejectBtn').onclick = () => verdict('reject');
+  $('laterBtn').onclick = () => verdict('later');
+  $('acceptBtn').onclick = () => verdict('accept');
+  $('undoBtn').onclick = undo;
+  $('autoBtn').onclick = autoAlign;
+  $('vertexToggle').onclick = (e) => {
+    e.currentTarget.classList.toggle('on');
+    drawVertices();
+  };
+  $('stepBtn').onclick = () => {
+    const steps = [0.25, 0.5, 1, 2, 5];
+    S.driftStep = steps[(steps.indexOf(S.driftStep) + 1) % steps.length];
+    dbPut('kv', 'settings', S);
+    paintChrome();
+  };
+  for (const b of document.querySelectorAll('[data-dir]')) {
+    const [dx, dy] = b.dataset.dir.split(',').map(Number);
+    b.onclick = () => nudge(dx * S.driftStep, dy * S.driftStep);
+  }
+  $('gearBtn').onclick = openSettings;
+  $('sheetClose').onclick = closeSettings;
+  $('sheetSave').onclick = saveSettings;
+  $('userBtn').onclick = login;
+  $('uploadBtn').onclick = uploadQueue;
+  $('clearTiles').onclick = async () => {
+    await dbClear('tiles'); await dbClear('ctx'); paintSettings(); toast('Cache cleared');
+  };
+  $('clearDecisions').onclick = async () => {
+    if (!confirm('Forget every accept/reject/later decision?')) return;
+    await dbClear('decisions'); toast('Decision history cleared');
+  };
+
+  const NUDGE = { ArrowUp: [0, 1], ArrowDown: [0, -1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] };
+  addEventListener('keydown', (e) => {
+    if ($('sheet').classList.contains('open')) return;
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+    const k = e.key;
+    if (NUDGE[k]) {
+      e.preventDefault();
+      const [dx, dy] = NUDGE[k];
+      nudge(dx * S.driftStep, dy * S.driftStep);
+      return;
+    }
+    const low = k.toLowerCase();
+    if (low === 'a' || k === 'Enter') verdict('accept');
+    else if (low === 'r' || k === 'Backspace') verdict('reject');
+    else if (low === 'l' || k === ' ') { e.preventDefault(); verdict('later'); }
+    else if (low === 'z') undo();
+    else if (low === 'g') autoAlign();
+    else if (low === 'v') $('vertexToggle').click();
+  });
+
+  let sx = 0;
+  const bar = $('bar');
+  bar.addEventListener('touchstart', (e) => { sx = e.touches[0].clientX; }, { passive: true });
+  bar.addEventListener('touchend', (e) => {
+    const dx = e.changedTouches[0].clientX - sx;
+    if (Math.abs(dx) > 70) verdict(dx > 0 ? 'accept' : 'reject');
+  });
+}
+
+(async function main() {
+  db = await idb();
+  const saved = await dbGet('kv', 'settings');
+  if (saved) S = Object.assign({}, DEF, saved);
+  await initWasm();
+  initMap();
+  bindUI();
+  await finishLogin();
+  await paintUser();
+  await refreshQueueBadge();
+  const n = await evictExpired();
+  if (n) console.log('evicted', n, 'stale cache entries');
+  setControls(false);
+  const env = envReport();
+  if (env.framed) {
+    $('start').classList.add('sandboxed');
+    $('emptyMsg').innerHTML = 'Preview sandbox (origin <b>null</b>) — the network is blocked here. ' +
+      'Upload this file to your own https origin and open it there.';
+    $('loadAreaBtn').disabled = true;
+    $('randomBtn').disabled = true;
+  }
+  const v = await dbGet('kv', 'view');
+  if (v) map.setView([v.lat, v.lon], v.z, { animate: false });
+  else if (!env.framed) await loadRandom().catch(() => {});
+  map.on('moveend', () => {
+    const c = map.getCenter();
+    dbPut('kv', 'view', { lat: c.lat, lon: c.lng, z: map.getZoom() });
+  });
+  $('start').style.display = 'flex';
+})();
