@@ -21,6 +21,9 @@ const DEF = {
   driftStep: 0.5,
   clearRadius: 50,
   dropKeys: [],
+  // Set once the one-time move off orto-proxy has happened, so choosing it
+  // again by hand is respected rather than silently undone on every launch.
+  offProxy: false,
 };
 
 const PRESETS = {
@@ -472,6 +475,10 @@ async function diagnose() {
   const base = apiBase();
   const out = [];
   const e = envReport();
+  // First line, because "which build am I actually running" turned out to be
+  // the hardest question to answer while chasing a stale service worker.
+  out.push('build       ' + (typeof BUILD_ID === 'string' ? BUILD_ID : '(dev)') +
+    '   imagery: ' + S.imagery);
   out.push('origin      ' + e.origin);
   out.push('secure ctx  ' + e.secure + '   in iframe: ' + e.framed);
   if (e.framed) {
@@ -1580,6 +1587,18 @@ function bindUI() {
   db = await idb();
   const saved = await dbGet('kv', 'settings');
   if (saved) S = Object.assign({}, DEF, saved);
+
+  // Saved settings win over DEF, so correcting the default was not enough:
+  // anyone who had ever tapped Save stayed pinned to orto-proxy, which cannot
+  // return a pixel-readable tile at all. Move them across once.
+  let migrated = false;
+  if (S.imagery === 'orto-proxy' && !S.offProxy) {
+    S.imagery = DEF.imagery;
+    S.offProxy = true;
+    await dbPut('kv', 'settings', S).catch(() => {});
+    migrated = true;
+  }
+
   await initWasm();
   initMap();
   bindUI();
@@ -1589,6 +1608,9 @@ function bindUI() {
   const n = await evictExpired();
   if (n) console.log('evicted', n, 'stale cache entries');
   setControls(false);
+  if (migrated) {
+    toast('Imagery moved off the budynki proxy — its CORS headers block pixel reads', 'warn');
+  }
   const env = envReport();
   if (env.framed) {
     $('start').classList.add('sandboxed');
