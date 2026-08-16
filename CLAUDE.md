@@ -79,7 +79,7 @@ app origin's behaviour. The browser's own console messages are quoted below.
 | `/sc/proposed_addresses` | **2**, all 8 times | no |
 | `/josm_data` | **0**, all 8 times | no |
 | `/random/` | 0 (and the body is a 500) | no |
-| `/orto/` | **1 or 2, varying per request** | intermittently |
+| `/orto/` | **1 on a 404, 2 on a 200** — see below | no, never usefully |
 
 Chromium's console, verbatim:
 
@@ -98,8 +98,11 @@ single attempt. Consequences:
 - `/orto/` tiles still **draw**, because a plain `<img>` performs no CORS check at all. What breaks
   is `fetch`, which is what the IndexedDB tile cache and auto-fit's pixel reads need. So expect
   working imagery with no offline caching and no auto-fit until this is fixed upstream.
-- This, not the transient 404s, is the larger part of "tiles don't always load": `/orto/` duplicates
-  the header on roughly half of responses.
+- `/orto/`'s header count is **not** random, and an earlier note here claiming it varied per request
+  was wrong — it came from counting headers and reading the status in two *separate* requests. Paired
+  in a single request, 14 samples out of 14: `200` carries two headers, `404` carries one. So a
+  browser's `fetch` sees either a CORS rejection or a 404, never an image. Beware this measurement
+  trap when re-checking any of the above.
 
 Diagnostics now distinguish the two with a `no-cors` retry: if the cors fetch fails and a `no-cors`
 fetch to the same URL resolves, the server was reached and its headers are the fault. That
@@ -138,10 +141,28 @@ Two upstream faults are live and are not ours to fix:
 ## Why auto-fit needs the proxy
 
 Auto-fit reads orthophoto pixels: WMS `GetMap` → `createImageBitmap` → canvas → `getImageData` →
-wasm Sobel → edge cross-correlation. `getImageData` taints on a cross-origin image without CORS, so
-the direct GUGiK endpoints may not work for it. `/orto` adds the headers, which is why it is the
-default imagery source. On failure the app disables auto-fit and falls back to the manual drift pad.
-The same constraint governs the IndexedDB tile cache, which needs `fetch` and therefore CORS.
+wasm Sobel → edge cross-correlation. `getImageData` taints on a cross-origin image without CORS. The
+same constraint governs the IndexedDB tile cache, which needs `fetch` and therefore CORS. On failure
+the app disables auto-fit and falls back to the manual drift pad.
+
+> **Correction, 2026-08-16.** This section used to say the direct GUGiK endpoints "may not work for
+> it" and that `/orto` "adds the headers, which is why it is the default imagery source". **It is the
+> other way round.** Measured in a headless browser, six tiles per source:
+>
+> | source | `fetch` ok | CORS-blocked | pixels |
+> |---|---|---|---|
+> | `orto-high` (direct GUGiK) | 6/6 | 0 | **readable** |
+> | `orto-std` (direct GUGiK) | 3/6 | 0 | **readable** |
+> | `orto-proxy` (budynki) | **0/6** | 2 | **never readable** |
+>
+> The proxy duplicates `Access-Control-Allow-Origin` on precisely the responses that carry an image —
+> 14 paired samples, `200` ⇒ two headers, `404` ⇒ one header, no exceptions — so `fetch` can never
+> obtain a tile through it, and neither the cache nor auto-fit can ever work. The direct endpoints
+> send exactly one header on both 200 and 404. **The default is now `orto-high`.** Do not "restore"
+> the proxy as the default without re-running that measurement.
+>
+> Tiles still *draw* through the proxy, because a plain `<img>` performs no CORS check at all, which
+> is why this went unnoticed: the map looked fine while the cache and auto-fit were dead.
 
 ## Environment constraints
 

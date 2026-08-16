@@ -231,10 +231,10 @@ input,select{width:100%;background:var(--ink);border:1px solid var(--line);color
 
     <label>Imagery</label>
     <select id="sImagery">
-      <option value="orto-proxy">Ortophoto via budynki proxy (CORS-safe)</option>
-      <option value="orto-std">Ortophoto standard (GUGiK)</option>
-      <option value="orto-high">Ortophoto high-res (GUGiK)</option>
-      <option value="orto-archive">Ortophoto archival (GUGiK)</option>
+      <option value="orto-high">Ortophoto high-res (GUGiK direct) — recommended</option>
+      <option value="orto-std">Ortophoto standard (GUGiK direct)</option>
+      <option value="orto-archive">Ortophoto archival (GUGiK direct)</option>
+      <option value="orto-proxy">Ortophoto via budynki proxy — CORS broken, no cache/auto-fit</option>
       <option value="osm">OSM Carto</option>
       <option value="custom">Custom WMS</option>
     </select>

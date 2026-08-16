@@ -2,7 +2,11 @@ const R = 6378137;
 const DEF = {
   apiBase: 'https://budynki.openstreetmap.org.pl',
   reportRejects: false,
-  imagery: 'orto-proxy',
+  // The direct GUGiK endpoints, not the budynki proxy. Measured in a browser:
+  // orto-high fetched 6/6 tiles with pixels readable, orto-std 3/6 readable,
+  // and orto-proxy 0/6 — the proxy duplicates Access-Control-Allow-Origin on
+  // exactly the responses that carry an image, so fetch can never obtain one.
+  imagery: 'orto-high',
   customUrl: '',
   customLayers: '',
   tileTTLdays: 7,
@@ -20,8 +24,11 @@ const DEF = {
 };
 
 const PRESETS = {
+  // Kept only so it can be re-tested if the header duplication is ever fixed
+  // upstream. Tiles do draw through it, because a plain <img> performs no CORS
+  // check, but nothing that needs fetch will work.
   'orto-proxy': {
-    name: 'Ortophoto via budynki proxy',
+    name: 'Ortophoto via budynki proxy (CORS broken)',
     url: 'https://budynki.openstreetmap.org.pl/orto',
     layers: 'Raster',
     attr: 'GUGiK / budynki.osm.org.pl',
@@ -785,10 +792,15 @@ function makeImagery() {
   imgLayer.bringToBack();
 }
 
-// Four, not three, because the /orto proxy's measured per-request success rate
-// is only about one in two: three tries would still leave better than one tile
-// in ten blank on a screenful.
+// Attempts on the <img> path, which is what actually paints the map. Four, not
+// three, because a source can transiently 404 around half its requests, and
+// three would still leave better than one tile in ten blank on a screenful.
 const TILE_TRIES = 4;
+// Attempts on the cors fetch, which only exists to populate the tile cache and
+// keep pixels readable. Display does not depend on it, so it gets fewer tries:
+// against a source with duplicated CORS headers it can never succeed at all,
+// and spending four requests per tile to discover that is wasteful on mobile.
+const TILE_FETCH_TRIES = 2;
 
 function tileCacheMixin(Base) {
   return Base.extend({
@@ -840,10 +852,10 @@ function tileCacheMixin(Base) {
 
         // 2. CORS fetch, so the bytes are cacheable and stay pixel-readable.
         let corsShaped = false;
-        if (pixelMode !== 'blocked') {
+        if (pixelMode !== 'blocked' && corsSignals < 2) {
           try {
             const r = await fetchOk(url, {
-              mode: 'cors', tries: TILE_TRIES, timeout: 12000, retryOn: transientImagery,
+              mode: 'cors', tries: TILE_FETCH_TRIES, timeout: 12000, retryOn: transientImagery,
             });
             const b = await r.blob();
             if (gone()) return;
