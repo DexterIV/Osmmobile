@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -61,4 +62,21 @@ if (missing.length) {
 }
 
 writeFileSync(join(root, 'index.html'), out);
-console.log(`index.html  ${(out.length / 1024).toFixed(0)} KB   wasm ${(wasm.length / 1024).toFixed(1)} KB`);
+
+// Stamp the service worker with a hash of what it is caching. Without this
+// sw.js is byte-identical between deploys, so the browser never checks for an
+// update and an installed PWA keeps serving the index.html it first cached.
+const buildId = createHash('sha256').update(out).digest('hex').slice(0, 12);
+const swSrc = readFileSync(src('sw.js'), 'utf8');
+if (!swSrc.includes('__BUILD_ID__')) {
+  console.error('src/sw.js no longer contains __BUILD_ID__ — updates would stop reaching installed clients');
+  process.exit(1);
+}
+const sw = swSrc.replace(/__BUILD_ID__/g, buildId);
+try { new Function(sw); } catch (err) {
+  console.error('sw.js failed to parse:', err.message);
+  process.exit(1);
+}
+writeFileSync(join(root, 'sw.js'), sw);
+
+console.log(`index.html  ${(out.length / 1024).toFixed(0)} KB   wasm ${(wasm.length / 1024).toFixed(1)} KB   sw ${buildId}`);

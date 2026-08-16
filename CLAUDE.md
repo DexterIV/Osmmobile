@@ -16,8 +16,13 @@ npm run serve      # http://localhost:8080
 npm test           # exercises the wasm kernels
 ```
 
-`index.html` is **generated** — never edit it directly. Edit `src/` and rebuild. It is committed
-because GitHub Pages serves it.
+`index.html` and `sw.js` at the repo root are **generated** — never edit them directly. Edit `src/`
+and rebuild. Both are committed because GitHub Pages serves them.
+
+`sw.js` is generated from `src/sw.js` with `__BUILD_ID__` replaced by a hash of the built
+`index.html`. The build fails if that placeholder goes missing, because a byte-identical `sw.js`
+means the browser never checks for an update and installed PWAs keep serving the shell they first
+cached.
 
 The build fails if any `$('someId')` in `src/app.js` has no matching `id=` in `src/shell.html`.
 That check exists because a missing id previously shipped as a runtime crash.
@@ -30,7 +35,9 @@ That check exists because a missing id previously shipped as a runtime crash.
 | `src/app.js` | all application logic |
 | `src/shell.html` | markup + CSS |
 | `build.mjs` | compiles wasm, inlines everything, validates output |
-| `sw.js`, `manifest.webmanifest`, `icon-*.png` | PWA shell |
+| `src/sw.js` | service worker source; `__BUILD_ID__` is stamped at build time |
+| `sw.js`, `manifest.webmanifest`, `icon-*.png` | PWA shell (`sw.js` generated) |
+| `test/retry.test.mjs` | retry/timeout helpers, sliced out of `app.js` and run against a stub fetch |
 | `setup.sh` | WSL bootstrap: deps, gh auth, build, push, enable Pages, serve |
 
 ## Data source — verified by reading gugik2osm's source
@@ -121,6 +128,16 @@ Each of these shipped once and was caught by testing:
    Leaflet is constructed with `keyboard: false` so it does not pan underneath.
 5. **Unguarded `cur()`.** Every candidate-dependent function must early-return when there is no
    current candidate, because keyboard handlers bypass `disabled` buttons.
+6. **A frozen service worker.** `sw.js` had a hardcoded cache name and cache-first navigation, so
+   the first `index.html` an installed PWA cached was the last one it ever ran. Every deploy after
+   that was invisible on the device. The cache name now carries the build hash and the fetch handler
+   is stale-while-revalidate.
+7. **Treating a flaky network as blocked CORS.** A dropped request, a 5xx and a missing
+   `Access-Control-Allow-Origin` all surface as the same opaque `fetch` rejection. Conflating them
+   latched `pixelMode = 'blocked'` on the first mobile-data blip, which disabled auto-fit for the
+   session *and* made every later tile bypass the IndexedDB cache. Missing CORS may only be inferred
+   from the one pattern that implies it — a network-shaped `fetch` failure on a tile that a plain
+   `<img>` then loads — and never from a timeout or an HTTP status.
 
 ## Measured performance, and an honest caveat
 
