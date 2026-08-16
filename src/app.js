@@ -414,6 +414,23 @@ async function fetchOk(url, opts) {
   return r;
 }
 
+// A cors fetch that fails tells you nothing on its own: offline, DNS, CSP and
+// a malformed Access-Control-Allow-Origin all arrive as the same TypeError.
+// A no-cors fetch skips CORS enforcement entirely, so if that one resolves the
+// server was reached and answered, and the fault is in its CORS headers.
+// Measured against budynki: /sc/* sends the header twice ('*, *') and
+// /josm_data and /random/ omit it, so this is the common case, not a corner.
+async function corsOrNetwork(url) {
+  try {
+    await fetch(url, { mode: 'no-cors', cache: 'no-store' });
+    return 'server answered, but the browser rejected its CORS headers — ' +
+      'likely duplicated or missing Access-Control-Allow-Origin. ' +
+      'The exact reason is in the browser console.';
+  } catch (_) {
+    return 'unreachable — offline, DNS, or blocked before the request left';
+  }
+}
+
 function markPixelsBlocked(why) {
   if (pixelMode === 'blocked') return;
   pixelMode = 'blocked';
@@ -479,6 +496,9 @@ async function diagnose() {
     } catch (err) {
       line(label.padEnd(12) + 'FAIL [' + (err.kind || '?') + '] ' + err.message +
         '  ' + ms() + '  after ' + (err.attempts || 1) + ' tries');
+      // Separate "your phone has no signal" from "this endpoint's headers are
+      // wrong", which the raw rejection cannot distinguish.
+      if (err.kind === 'network') line('            → ' + await corsOrNetwork(url));
     }
     for (const n of notes) line('            · ' + n);
   };

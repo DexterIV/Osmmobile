@@ -42,9 +42,13 @@ That check exists because a missing id previously shipped as a runtime crash.
 
 ## Data source — verified by reading gugik2osm's source
 
-Base: `https://budynki.openstreetmap.org.pl`. **Every nginx location sets
-`Access-Control-Allow-Origin: *`** — browser-side fetching works without a proxy. This was checked
-in their `conf/nginx.conf`, not assumed.
+Base: `https://budynki.openstreetmap.org.pl`.
+
+> **Correction, 2026-08-16.** This section used to claim that every nginx location sets
+> `Access-Control-Allow-Origin: *`, so browser-side fetching works without a proxy, and that this
+> "was checked in their `conf/nginx.conf`, not assumed". Reading the config was not the same as
+> observing the responses, and the conclusion was wrong. **A browser cannot fetch `/sc/*`,
+> `/josm_data` or `/random/` at all.** See *CORS reality* below.
 
 | endpoint | purpose |
 |---|---|
@@ -62,6 +66,47 @@ GeoJSON feature shape is `properties: { id, tags }` where `id` is the upstream `
 sticks to the object rather than to a coordinate hash.
 
 `LAYERS=Raster` is confirmed from their `map.js`. Not a guess.
+
+### CORS reality, measured 2026-08-16
+
+Counted with `curl -D -` over 8 GETs per endpoint, then confirmed in headless Edge against the real
+app origin's behaviour. The browser's own console messages are quoted below.
+
+| endpoint | `Access-Control-Allow-Origin` headers | browser can fetch? |
+|---|---|---|
+| `/layers/` | exactly 1 | **yes** |
+| `/sc/proposed_buildings` | **2** (`*, *`), all 8 times | no |
+| `/sc/proposed_addresses` | **2**, all 8 times | no |
+| `/josm_data` | **0**, all 8 times | no |
+| `/random/` | 0 (and the body is a 500) | no |
+| `/orto/` | **1 or 2, varying per request** | intermittently |
+
+Chromium's console, verbatim:
+
+- `/sc/*` and `/orto/`: *"has been blocked by CORS policy: The 'Access-Control-Allow-Origin' header
+  contains multiple values '\*, \*', but only one is allowed."*
+- `/josm_data` and `/random/`: *"has been blocked by CORS policy: No 'Access-Control-Allow-Origin'
+  header is present on the requested resource."*
+
+**No client-side change can fix any of this.** A duplicated header and a missing header are both
+fatal to `fetch`, and retrying cannot help where the fault is deterministic — `/sc/*` fails on every
+single attempt. Consequences:
+
+- Candidate fetching over `/sc/*` and `/josm_data` is **dead from a browser**. The file picker still
+  works, and a direct browser *navigation* to `/josm_data` is not CORS-restricted, so
+  download-then-open is a viable route with no third party involved.
+- `/orto/` tiles still **draw**, because a plain `<img>` performs no CORS check at all. What breaks
+  is `fetch`, which is what the IndexedDB tile cache and auto-fit's pixel reads need. So expect
+  working imagery with no offline caching and no auto-fit until this is fixed upstream.
+- This, not the transient 404s, is the larger part of "tiles don't always load": `/orto/` duplicates
+  the header on roughly half of responses.
+
+Diagnostics now distinguish the two with a `no-cors` retry: if the cors fetch fails and a `no-cors`
+fetch to the same URL resolves, the server was reached and its headers are the fault. That
+replaces the old, actively misleading "blocked or offline" for this case.
+
+The upstream fix is theirs: an `add_header` at both `server` and `location` level, or nginx and the
+application both adding it. Worth reporting to gugik2osm.
 
 ### Upstream state, measured 2026-08-16
 
