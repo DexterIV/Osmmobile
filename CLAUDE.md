@@ -185,7 +185,9 @@ but that was never measured.** Do not describe the wasm as a large speedup.
 - Decide what to do about `/random/` being 500. Either report it upstream or drop the button.
 - The `~50%` figure for `/orto` came from 24 requests on one connection. If it is really load
   dependent rather than random, jittered retries may be making it worse, not better — worth
-  measuring per-tile attempt counts on a real screenful before trusting `TILE_TRIES = 4`.
+  measuring per-tile attempt counts on a real screenful before trusting `TILE_TRIES = 4`. Replaying
+  the shipped policy over 20 distinct tiles did give 20/20 loaded from 28 requests, 1.40 attempts
+  each, no blanks — but that was one desktop connection, not a phone on mobile data.
 - Tune the auto-fit confidence gate. Currently refuses below z=1.6; untested against real
   orthophoto over tree cover and snow.
 - Addresses currently upload as standalone nodes. Merging an address into an existing OSM building
