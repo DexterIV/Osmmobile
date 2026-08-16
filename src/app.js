@@ -621,12 +621,8 @@ async function fetchArea(bounds) {
 }
 
 async function loadArea() {
+  if (areaTooBig()) return;
   const b = map.getBounds();
-  const span = Math.max(b.getNorth() - b.getSouth(), b.getEast() - b.getWest());
-  if (map.getZoom() < 12 || span > 0.2) {
-    toast('Zoom in a bit — that area is too big to fetch', 'warn');
-    return;
-  }
   setStage('Fetching candidates');
   try {
     const list = await fetchArea(b);
@@ -638,11 +634,21 @@ async function loadArea() {
     await ingest(list, list.length + ' candidates here');
   } catch (err) {
     setStage('');
-    toast('Fetch failed: ' + classify(err) + ' — open settings and run diagnostics', 'warn');
+    // Measured: /sc/* duplicates Access-Control-Allow-Origin on every request
+    // and /josm_data omits it, so a browser cannot fetch either. That makes
+    // this the expected path, not an anomaly — send people to the route that
+    // does work rather than to a diagnostics screen that only confirms it.
+    $('start').classList.add('expanded');
+    toast('The server\'s CORS headers block in-app fetching. Use “Get this area\'s data”, ' +
+      'then paste it or open the saved file.', 'warn');
   }
 }
 
-async function loadRandom() {
+// quiet is used for the automatic attempt at boot. /random/ answers 500 on
+// every request and its error page carries no CORS header, so the browser
+// reports it as a network failure — meaning a fresh launch would otherwise
+// always greet you with an alarming toast about something you cannot fix.
+async function loadRandom(quiet) {
   setStage('Finding somewhere with work');
   try {
     const r = await fetchOk(apiBase() + '/random/', { tries: 3, timeout: 15000 });
@@ -651,26 +657,71 @@ async function loadRandom() {
     await loadArea();
   } catch (err) {
     setStage('');
-    // /random/ was measured answering 500 on every attempt, so this is the
-    // expected path rather than an edge case. Point at the way round it
-    // instead of implying the whole server is unreachable.
-    if (err.kind === 'http') {
-      toast('The server\'s /random/ endpoint is failing (' + err.message +
-        '). Pan to an area yourself and use “Load this area”.', 'warn');
-    } else {
-      toast('Could not reach the server: ' + classify(err) + ' — run diagnostics in settings', 'warn');
-    }
+    if (quiet) return;
+    // Do not key this on err.kind === 'http': a 500 without an
+    // Access-Control-Allow-Origin header reaches us as kind 'network', so the
+    // upstream fault and a genuinely dead connection look identical here.
+    $('start').classList.add('expanded');
+    toast('“Take me somewhere” is broken upstream — /random/ has been returning 500. ' +
+      'Pan to an area and use “Load this area”, or “Get this area\'s data”.', 'warn');
   }
 }
 
-async function loadFile(file) {
-  const text = await file.text();
-  setStage('Parsing ' + file.name);
+// The bbox URL for the current view. A browser *navigation* to this is not
+// subject to CORS, which is why the download route works where fetch cannot:
+// /josm_data sends no Access-Control-Allow-Origin at all.
+function areaDataUrl() {
+  const b = map.getBounds();
+  return apiBase() + '/josm_data?filter_by=bbox' +
+    '&layers=addresses_to_import,buildings_to_import' +
+    '&xmin=' + b.getWest().toFixed(6) + '&ymin=' + b.getSouth().toFixed(6) +
+    '&xmax=' + b.getEast().toFixed(6) + '&ymax=' + b.getNorth().toFixed(6);
+}
+
+function areaTooBig() {
+  const b = map.getBounds();
+  const span = Math.max(b.getNorth() - b.getSouth(), b.getEast() - b.getWest());
+  if (map.getZoom() < 12 || span > 0.2) {
+    toast('Zoom in a bit — that area is too big to fetch', 'warn');
+    return true;
+  }
+  return false;
+}
+
+async function loadText(text, label) {
+  setStage('Parsing ' + label);
   const t0 = performance.now();
   let list;
-  if (/^\s*\{/.test(text)) list = parseGeoJson(text);
-  else list = parseOsmXml(text);
+  try {
+    list = /^\s*\{/.test(text) ? parseGeoJson(text) : parseOsmXml(text);
+  } catch (err) {
+    setStage('');
+    toast('Could not parse ' + label + ': ' + (err.message || err), 'warn');
+    return;
+  }
+  if (!list.length) {
+    setStage('');
+    toast('No candidates found in ' + label + ' — wrong file, or nothing left here', 'warn');
+    return;
+  }
   await ingest(list, list.length + ' candidates in ' + fmt(performance.now() - t0, 0) + ' ms');
+}
+
+async function loadFile(file) {
+  await loadText(await file.text(), file.name);
+}
+
+async function loadPasted() {
+  let text = ($('pasteBox').value || '').trim();
+  if (!text && navigator.clipboard && navigator.clipboard.readText) {
+    text = (await navigator.clipboard.readText().catch(() => '')).trim();
+  }
+  if (!text) {
+    toast('Nothing to load — paste the data into the box first', 'warn');
+    return;
+  }
+  $('pasteBox').value = '';
+  await loadText(text, 'pasted data');
 }
 
 async function ingest(list, label) {
@@ -1447,8 +1498,20 @@ async function saveSettings() {
 
 function bindUI() {
   $('file').onchange = (e) => { if (e.target.files[0]) loadFile(e.target.files[0]); };
+  // The markup ships this button disabled and labelled "Loading…", and nothing
+  // used to turn it back on — setControls only touches #pad, #padTools and
+  // #bar, so the file picker was permanently dead. Parsing needs wasm, and
+  // bindUI runs after initWasm, so this is the right point to enable it.
+  $('pickBtn').disabled = false;
+  $('pickBtn').textContent = 'Open a .osm or GeoJSON file';
   $('pickBtn').onclick = () => $('file').click();
   $('loadAreaBtn').onclick = loadArea;
+  $('getDataBtn').onclick = () => {
+    if (areaTooBig()) return;
+    window.open(areaDataUrl(), '_blank', 'noopener');
+    toast('Copy that page\'s text back into the box, or save it and use the file picker');
+  };
+  $('pasteBtn').onclick = loadPasted;
   $('randomBtn').onclick = loadRandom;
   $('moreBtn').onclick = () => $('start').classList.toggle('expanded');
   $('diagBtn').onclick = () => { $('diagOut').textContent = 'Running…'; $('diagOut').style.display = 'block'; diagnose(); };
@@ -1536,7 +1599,7 @@ function bindUI() {
   }
   const v = await dbGet('kv', 'view');
   if (v) map.setView([v.lat, v.lon], v.z, { animate: false });
-  else if (!env.framed) await loadRandom().catch(() => {});
+  else if (!env.framed) await loadRandom(true).catch(() => {});
   map.on('moveend', () => {
     const c = map.getCenter();
     dbPut('kv', 'view', { lat: c.lat, lon: c.lng, z: map.getZoom() });

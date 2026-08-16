@@ -110,6 +110,10 @@ path.cand{filter:drop-shadow(0 0 4px rgba(255,45,149,.5))}
 #start.sandboxed .startNote{color:#f6d99a}
 .startRow button:disabled{opacity:.35;border-color:var(--line);color:var(--dim);background:var(--panel2)}
 .startMore p{margin:0;color:var(--dim);font-size:10.5px;line-height:1.5;font-family:var(--mono)}
+#pasteBox{width:100%;box-sizing:border-box;height:54px;resize:vertical;background:var(--panel2);
+  color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:7px 8px;
+  font-family:var(--mono);font-size:10.5px}
+#pasteBox:focus{outline:none;border-color:var(--plot)}
 .ghost{padding:11px;border-radius:7px;border:1px solid var(--line);background:var(--panel2);
   color:var(--text);font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase}
 
@@ -197,9 +201,15 @@ input,select{width:100%;background:var(--ink);border:1px solid var(--line);color
       <button id="moreBtn">⋯</button>
     </div>
     <div class="startMore">
+      <button class="ghost" id="getDataBtn">Get this area's data ↗</button>
+      <textarea id="pasteBox" placeholder="…then paste the .osm or GeoJSON text here"></textarea>
+      <button class="ghost" id="pasteBtn">Load pasted data</button>
       <button class="ghost" id="pickBtn" disabled>Loading…</button>
-      <p>Or open a downloaded <b>.osm</b> package. Keys: <b>A</b> accept, <b>R</b> reject,
-      <b>L</b> later, <b>G</b> auto-fit, <b>Z</b> undo, <b>V</b> vertices, arrows nudge.</p>
+      <p><b>Load this area</b> is blocked by the upstream server's CORS headers, not by your
+      network. <b>Get this area's data</b> opens it in a new tab instead, which the browser
+      allows — copy that text back into the box above, or save it and open the file.</p>
+      <p>Keys: <b>A</b> accept, <b>R</b> reject, <b>L</b> later, <b>G</b> auto-fit,
+      <b>Z</b> undo, <b>V</b> vertices, arrows nudge.</p>
     </div>
   </div>
 </div>
