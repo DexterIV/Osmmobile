@@ -92,9 +92,11 @@ Chromium's console, verbatim:
 fatal to `fetch`, and retrying cannot help where the fault is deterministic — `/sc/*` fails on every
 single attempt. Consequences:
 
-- Candidate fetching over `/sc/*` and `/josm_data` is **dead from a browser**. The file picker still
-  works, and a direct browser *navigation* to `/josm_data` is not CORS-restricted, so
-  download-then-open is a viable route with no third party involved.
+- Candidate fetching over `/sc/*` and `/josm_data` is **dead from a browser**. Three routes still
+  work and none needs a third party: **Get this area's data** (opens the `/josm_data` bbox URL in a
+  new tab — a *navigation* is not CORS-restricted), the **paste box**, and the **file picker**. A
+  CORS proxy would restore one-tap loading but would put every candidate fetch and your IP through
+  someone else's server, so it is deliberately not implemented.
 - `/orto/` tiles still **draw**, because a plain `<img>` performs no CORS check at all. What breaks
   is `fetch`, which is what the IndexedDB tile cache and auto-fit's pixel reads need. So expect
   working imagery with no offline caching and no auto-fit until this is fixed upstream.
@@ -221,12 +223,33 @@ Each of these shipped once and was caught by testing:
    the first `index.html` an installed PWA cached was the last one it ever ran. Every deploy after
    that was invisible on the device. The cache name now carries the build hash and the fetch handler
    is stale-while-revalidate.
-7. **Treating a flaky network as blocked CORS.** A dropped request, a 5xx and a missing
+7. **A permanently disabled file picker.** `shell.html` shipped `#pickBtn` with a hard `disabled`
+   attribute and the label "Loading…", and nothing ever cleared either — `setControls` only touches
+   `#pad`, `#padTools` and `#bar`. The file-open route was dead from the first commit and nobody
+   noticed, because the button looked like it was still initialising. `bindUI` now enables it.
+8. **Treating a flaky network as blocked CORS.** A dropped request, a 5xx and a missing
    `Access-Control-Allow-Origin` all surface as the same opaque `fetch` rejection. Conflating them
    latched `pixelMode = 'blocked'` on the first mobile-data blip, which disabled auto-fit for the
    session *and* made every later tile bypass the IndexedDB cache. Missing CORS may only be inferred
    from the one pattern that implies it — a network-shaped `fetch` failure on a tile that a plain
    `<img>` then loads — and never from a timeout or an HTTP status.
+
+## Driving the app headlessly
+
+There is no Linux browser in the WSL environment, but `msedge.exe` on the Windows side is reachable
+and Windows can see WSL's listening ports, so `python3 -m http.server` plus
+`msedge.exe --headless=new` works for real end-to-end checks.
+
+**Do not trust `--virtual-time-budget` for anything involving the network.** It fires every timer
+instantly, which means each `AbortController` timeout in `fetchRetry` aborts its own in-flight
+request, and the budget is exhausted before the async tail of `main()` runs. It reported the app
+stalling at boot when it does not. To check real behaviour, serve a copy with a small probe script
+appended that `fetch`es a marker URL back at the stub server once `#start` is visible, launch Edge
+with real wall-clock time, and read the marker. Measured that way, boot completes in about 10 s.
+
+`--enable-logging=stderr --v=1` is what surfaces the browser's own CORS console messages, which is
+how the duplicated-header fault above was identified. `--dump-dom` is enough to confirm markup and
+that `bindUI` ran.
 
 ## Measured performance, and an honest caveat
 
