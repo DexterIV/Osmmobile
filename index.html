@@ -201,6 +201,11 @@ button.ghost{padding:11px;border-radius:7px;border:1px solid var(--line);backgro
   color:var(--text);font-family:var(--mono);font-size:11px;letter-spacing:.1em;
   text-transform:uppercase;width:100%}
 #tagPresets{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
+#lcClasses{display:flex;flex-wrap:wrap;gap:6px}
+#lcClasses label{display:inline-flex;align-items:center;gap:6px;margin:0;text-transform:none;
+  letter-spacing:0;font-size:11px;color:var(--text);border:1px solid var(--line);
+  border-radius:20px;padding:6px 10px;background:var(--panel2)}
+#lcClasses input{width:auto;flex:0 0 auto}
 #tagPresets button{flex:0 0 auto;border:1px dashed var(--line);background:none;color:var(--dim);
   border-radius:20px;padding:6px 10px;font-family:var(--mono);font-size:10.5px}
 #tagDone{border-color:#1d4f3e;color:var(--verify);background:#0f1c17}
@@ -953,7 +958,8 @@ svg.leaflet-image-layer.leaflet-interactive path {
     <button id="moreBtn">⋯</button>
   </div>
   <div class="startMore">
-    <button class="ghost" id="getDataBtn">Get this area's data ↗</button>
+    <button class="ghost" id="lcBtn" disabled>Land cover from server</button>
+      <button class="ghost" id="getDataBtn">Get this area's data ↗</button>
     <textarea id="pasteBox" placeholder="…then paste the .osm or GeoJSON text here"></textarea>
     <button class="ghost" id="pasteBtn">Load pasted data</button>
     <button class="ghost" id="pickBtn" disabled>Loading…</button>
@@ -1053,6 +1059,16 @@ svg.leaflet-image-layer.leaflet-interactive path {
       <div><label>Objects per changeset</label><input id="sBatch" type="number" min="1" max="500"></div>
     </div>
 
+    <label>Land-cover server (vibe-osm-importer <code>serve_review.py</code>)</label>
+    <input id="sLcServer" placeholder="https://…trycloudflare.com">
+    <p class="note">Run <b>serve_review.py --dir ./out</b> on the laptop and expose it with
+      <b>cloudflared tunnel --url http://localhost:8000</b>, then paste the https URL here. It must be
+      https: a browser refuses plain http from this page. Leave empty and land cover is simply off —
+      building review does not use this at all.</p>
+    <p id="lcStatus" class="note"></p>
+    <label>Land-cover classes to review</label>
+    <div id="lcClasses"></div>
+
     <label>Source repository (changeset <code>repo</code> tag)</label>
     <input id="sRepo" placeholder="https://github.com/DexterIV/Osmmobile">
     <label style="display:flex;align-items:center;gap:9px;text-transform:none;letter-spacing:0;font-size:12px;font-family:var(--sans);color:var(--text)">
@@ -1097,7 +1113,7 @@ svg.leaflet-image-layer.leaflet-interactive path {
 const WASM_B64="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aiADaiIDQQI2AgAgACADNgKgDCAAIAEQBguuBAMKfgF/AXwgAEL///////////8Ag0I0iEKVCH0iAUI/gyEEIAFCBoenQQN0QZAJaiILKQMAIQMgCykDCCECIAspAxAhASAEQgBSBEAgAyAEhiACQsAAIAR9IgWIhCEDIAIgBIYgASAFiIQhAiABIASGIAspAxggBYiEIQELIABC/////////weDQoCAgICAgIAIhCIEQv////8PgyEFIAJC/////w+DIgYgBEIgiCIHfiACQiCIIgIgBX4gBSAGfiIFQiCIfCIGQv////8Pg3whCCACIAd+IAZCIIh8IAhCIIh8JCggByABQiCIfiIBIAVC/////w+DIAhCIIZ8fCICIAFUrSMoIAMgBH58fCIDQgKGIAJCPoiEIgRCP4ciBSACQgKGhSECIAQgBUIBh4UiAXkhBiABIAaGIAJCwAAgBn2IhCIHQv////8PgyEBIAdCIIgiCEK0hKOLAn4gAUKitb/IDH4gAUK0hKOLAn4iCUIgiHwiCkL/////D4N8IQEgCEKitb/IDH4gCkIgiHwgAUIgiHwkKCAHukSEG3BRzJg4P6IgAiAGhrpEGC1EVPshOT+ioPwHIgIgCUL/////D4MgAUIghnwiAVatIygiB0ILiHy6JCYgB0I1hiABQguIhCACfLpEAAAAAAAA8DuiJCcjJkKAgICAgICA2DwgBkI0hn0gACAEhUKAgICAgICAgIB/g4S/IgyiJCYjJyAMoiQnIANCPocgBX2nC+8HAwV8A38BfiAAvSIJQiCIpyIGQR92IQggBkH/////B3EiBkH7w6T/A00EQCAGQZ7BmvIDSQRARAAAAAAAAPA/DwsgACAAoiIBIAGiIQJEAAAAAAAA8D8gAUQAAAAAAADgP6IiA6EiBEQAAAAAAADwPyAEoSADoSABIAEgASABRJAVyxmgAfo+okR3UcEWbMFWv6CiRExVVVVVVaU/oKIgAiACoiABIAFE1DiIvun6qL2iRMSxtL2e7iE+oKJErVKcgE9+kr6goqCiIABEAAAAAAAAAACioaCgDwsgBkGAgMD/B08EQCAAIAChDwsCfyAJQiCIp0H/////B3EiB0H8souABEkEQEEBIQYgCAR8IABEAABAVPsh+T+gIQBBfyEGIAdB+8Pk/wNHBHwgACAARDFjYhphtNA9oCIAoUQxY2IaYbTQPaAFIABEAABgGmG00D2gIgFEc3ADLooZozugIQAgASAAoURzcAMuihmjO6ALBSAARAAAQFT7Ifm/oCEAIAdB+8Pk/wNHBHwgACAARDFjYhphtNC9oCIAoUQxY2IaYbTQvaAFIABEAABgGmG00L2gIgFEc3ADLooZo7ugIQAgASAAoURzcAMuihmju6ALCyAAJCYkJyAGDAELIAdB+8PkiQRJBEAgB0EUdiIGIAAgAESDyMltMF/kP6KeIgNEAABAVPsh+T+ioSIAIANEMWNiGmG00D2iIgKhIgG9QiCIp0EUdkH/D3FrQRBLBEAgA0RzcAMuihmjO6IgACAAIANEAABgGmG00D2iIgGhIgChIAGhoSECIAYgACACoSIBvUIgiKdBFHZB/w9xa0ExSwRAIANEwUkgJZqDezmiIAAgACADRAAAAC6KGaM7oiIBoSIAoSABoaEhAiAAIAKhIQELCyABJCYgACABoSACoSQnIAP8AgwBC0EAIAkQCiIGayAGIAgbCyEGIyYhASMnIQIgBkEBcQR8IAEgAaIiACABoiEDIAEgACACRAAAAAAAAOA/oiADIAAgAER9/rFX4x3HPqJE1WHBGaABKr+gokSm+BARERGBP6AgACAAIACioiAARHzVz1o62eU9okTrnCuK5uVavqCioKKhoiACoSADRElVVVVVVcW/oqGhBSABIAGiIgMgA6IhBEQAAAAAAADwPyADRAAAAAAAAOA/oiIAoSIFRAAAAAAAAPA/IAWhIAChIAMgAyADIANEkBXLGaAB+j6iRHdRwRZswVa/oKJETFVVVVVVpT+goiAEIASiIAMgA0TUOIi+6fqovaJExLG0vZ7uIT6gokStUpyAT36SvqCioKIgASACoqGgoAsiAJogACAGQQFqQQJxGwsEACMNC6oCAQR/A0AgACABQQRrSARAIwAgAGotAABBPEYEfyMAIABBAWpqLQAAQfQARgVBAAsEfyMAIABBAmpqLQAAQeEARgVBAAsEfyMAIABBA2pqLQAAQecARgVBAAsEQCAAIQQDQCAEIwFIBH8jACAEai0AAEE+RwVBAAsEQCAEQQFqIQQMAQsLIABBBGogBEHrAEEAQQBBARADIgZBAE4EQEEBIQdBACEFA0AgAyAFSgRAAkAjACAFIAZqai0AACACIAVqLQAARwRA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";
 </script>
 <script>
-const BUILD_ID="18a7a7ec5b20";
+const BUILD_ID="54ca1252651c";
 </script>
 <script>
 // Orto Review — review BDOT10k buildings and PRG addresses against the GUGiK
@@ -1130,6 +1146,9 @@ const DEF = {
   source: 'BDOT10k;PRG',
   // Points at the source rather than a hashtag that says nothing.
   repo: 'https://github.com/DexterIV/Osmmobile',
+  // Land cover is off until a server is set. Buildings never consult either.
+  lcServer: '',
+  lcOff: [],
   importTag: false,
   clientId: '',
   maxShift: 8,
@@ -3393,6 +3412,157 @@ function csTags(count, city) {
   return t;
 }
 
+// ---- Land cover, from the importer's own server -----------------------------
+// Kept deliberately separate from the buildings path. Buildings come from vector
+// tiles and need nothing here, so with no server configured or reachable the
+// building review still works in full — that separation is a requirement, not a
+// side effect, so do not fold these together.
+//
+// The geometry work stays in vibe-osm-importer: it clips against fresh Overpass,
+// de-overlaps exactly, preserves holes and drops slivers. serve_review.py only
+// indexes and serves what it wrote. Nothing is re-derived here; this fetches,
+// filters by class, and reviews.
+
+// Every class the importer emits. Order is the order shown in settings.
+const LC_CLASSES = [
+  'landuse=farmland', 'landuse=meadow', 'landuse=grass',
+  'landuse=forest', 'natural=wood', 'natural=scrub',
+  'landuse=orchard', 'landuse=vineyard', 'landuse=allotments',
+  'natural=sand', 'natural=bare_rock', 'natural=tree', 'building=yes',
+];
+
+function lcServer() {
+  return (S.lcServer || '').trim().replace(/\/+$/, '');
+}
+
+// A class is reviewed unless it has been switched off, so a class the importer
+// starts emitting later shows up rather than being silently dropped.
+function lcEnabled(cls) {
+  return !(S.lcOff || []).includes(cls);
+}
+
+function candidateClass(c) {
+  for (const k of AREA_KEYS.concat(['building'])) {
+    if (c.tags[k]) return k + '=' + c.tags[k];
+  }
+  return '';
+}
+
+async function lcIndex() {
+  const base = lcServer();
+  if (!base) throw new Error('no land-cover server set');
+  const r = await fetchOk(base + '/index', { tries: 2, timeout: 20000 });
+  const j = await r.json();
+  if (!Array.isArray(j)) throw new Error('unexpected index shape');
+  return j;
+}
+
+const bboxHits = (tiles, b) => tiles.filter((t) => {
+  const q = t.bbox;
+  return Array.isArray(q) && q.length === 4 &&
+    q[0] <= b.getEast() && q[2] >= b.getWest() &&
+    q[1] <= b.getNorth() && q[3] >= b.getSouth();
+});
+
+async function loadLandCover() {
+  const base = lcServer();
+  if (!base) { openSettings(); toast('Set the land-cover server first', 'warn'); return; }
+  setStage('Asking the land-cover server');
+  try {
+    const tiles = await lcIndex();
+    const b = dataBounds();
+    let hits = bboxHits(tiles, b);
+    if (!hits.length) {
+      setStage('');
+      // Being told where the work actually is beats "nothing here".
+      const near = tiles.slice().sort((x, y) =>
+        metresBetween([b.getCenter().lat, b.getCenter().lng], [(x.bbox[1] + x.bbox[3]) / 2, (x.bbox[0] + x.bbox[2]) / 2]) -
+        metresBetween([b.getCenter().lat, b.getCenter().lng], [(y.bbox[1] + y.bbox[3]) / 2, (y.bbox[0] + y.bbox[2]) / 2]))[0];
+      toast(tiles.length
+        ? 'No land-cover tile covers this view. Nearest of ' + tiles.length + ' is at ' +
+          ((near.bbox[1] + near.bbox[3]) / 2).toFixed(3) + ', ' + ((near.bbox[0] + near.bbox[2]) / 2).toFixed(3)
+        : 'The server has no tiles — run the importer first', 'warn');
+      return;
+    }
+    // Cap the work: a whole voivodeship of tiles would be a very long download.
+    hits = hits.slice(0, 12);
+    const list = [];
+    let failed = 0;
+    for (let i = 0; i < hits.length; i++) {
+      setStage('Land cover ' + (i + 1) + ' / ' + hits.length);
+      try {
+        const r = await fetchOk(base + '/tile/' + encodeURIComponent(hits[i].id) + '.osm',
+          { tries: 2, timeout: 40000 });
+        // parseOsmXml handles the relations, so holes survive as holes.
+        for (const c of parseOsmXml(await r.text())) list.push(c);
+      } catch (err) { failed++; }
+    }
+    const kept = list.filter((c) => {
+      const cls = candidateClass(c);
+      return cls ? lcEnabled(cls) : true;
+    });
+    const dropped = list.length - kept.length;
+    if (!kept.length) {
+      setStage('');
+      toast(list.length
+        ? 'All ' + list.length + ' features are in classes you have switched off'
+        : 'Those tiles held nothing reviewable', 'warn');
+      return;
+    }
+    const holes = kept.reduce((n, c) => n + ((c.holes || []).length ? 1 : 0), 0);
+    await ingest(kept, kept.length + ' land-cover features from ' + hits.length + ' tile' +
+      (hits.length > 1 ? 's' : '') +
+      (holes ? ' · ' + holes + ' with holes' : '') +
+      (dropped ? ' · ' + dropped + ' filtered out' : '') +
+      (failed ? ' · ' + failed + ' tile(s) failed' : ''));
+  } catch (err) {
+    setStage('');
+    toast('Land-cover server: ' + classify(err) +
+      ' — check the https URL in settings and that cloudflared is up', 'warn');
+  }
+}
+
+
+function paintLcClasses() {
+  const box = $('lcClasses');
+  if (!box) return;
+  box.innerHTML = '';
+  for (const cls of LC_CLASSES) {
+    const id = 'lc_' + cls.replace(/[^a-z0-9]/gi, '_');
+    const lab = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.id = id;
+    cb.checked = lcEnabled(cls);
+    lab.appendChild(cb);
+    lab.appendChild(document.createTextNode(cls));
+    box.appendChild(lab);
+  }
+}
+
+async function paintLcStatus() {
+  const el = $('lcStatus');
+  const btn = $('lcBtn');
+  const base = lcServer();
+  if (!base) {
+    if (el) el.textContent = '';
+    if (btn) { btn.disabled = true; btn.title = 'Set a land-cover server in settings'; }
+    return;
+  }
+  if (btn) { btn.disabled = false; btn.title = ''; }
+  if (!el) return;
+  el.textContent = 'Checking…';
+  try {
+    const r = await fetchOk(base + '/health', { tries: 1, timeout: 12000 });
+    const j = await r.json();
+    el.textContent = 'Server ok — ' + j.tiles + ' tile(s) in ' + (j.dir || '?');
+    el.style.color = 'var(--verify)';
+  } catch (err) {
+    el.textContent = 'Not reachable: ' + classify(err);
+    el.style.color = 'var(--ochre)';
+  }
+}
+
 // ---- Open in iD ------------------------------------------------------------
 // For the times when this app's one-object-at-a-time view is the wrong tool:
 // iD has the imagery switcher, measurement, history, relation editing and so on.
@@ -3580,6 +3750,9 @@ function paintSettings() {
   $('sComment').value = S.comment;
   $('sSource').value = S.source;
   $('sRepo').value = S.repo;
+  $('sLcServer').value = S.lcServer;
+  paintLcClasses();
+  paintLcStatus();
   $('sImportTag').checked = !!S.importTag;
   $('sClient').value = S.clientId;
   dbGet('kv', 'authError').then((m) => {
@@ -3608,6 +3781,11 @@ async function saveSettings() {
   S.comment = $('sComment').value;
   S.source = $('sSource').value;
   S.repo = $('sRepo').value.trim();
+  S.lcServer = $('sLcServer').value.trim();
+  S.lcOff = LC_CLASSES.filter((cls) => {
+    const box = $('lc_' + cls.replace(/[^a-z0-9]/gi, '_'));
+    return box && !box.checked;
+  });
   S.importTag = $('sImportTag').checked;
   S.clientId = $('sClient').value.trim();
   S.apiBase = $('sApiBase').value.trim() || DEF.apiBase;
@@ -3631,6 +3809,8 @@ function bindUI() {
   $('pickBtn').textContent = 'Open a .osm or GeoJSON file';
   $('pickBtn').onclick = () => $('file').click();
   $('loadAreaBtn').onclick = loadArea;
+  $('lcBtn').onclick = loadLandCover;
+  paintLcStatus();
   $('getDataBtn').onclick = () => {
     if (areaTooBig()) return;
     const b = dataBounds();

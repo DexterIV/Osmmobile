@@ -427,13 +427,32 @@ Why the app does not fetch those sources itself, measured 2026-08-18:
    containing a barn is not a duplicate of the barn, and judging areas against footprints would flag
    every field. Comparing against existing *land cover* would be the useful check and is not written.
 
-### Still to do
+### The server, and how it is reached
 
-- The importer-side server and the app-side fetch, with per-class enable/disable in settings.
-- **Mixed content is the open blocker.** The app is HTTPS on GitHub Pages; a browser will refuse
-  `http://<laptop-ip>:port`. Either tunnel the server to an HTTPS URL, install a locally-trusted cert,
-  or serve the app from the laptop as well and lose PKCE sign-in with it (`crypto.subtle` is absent on
-  an insecure origin, and `http://localhost` being secure does not help a phone).
+`serve_review.py` in the importer repo indexes and serves the `.osm` tiles the pipeline has already
+written — `GET /health`, `GET /index` (id, bbox, per-class counts), `GET /tile/<id>.osm`. Stdlib only,
+binds `127.0.0.1`, reindexes when a file's mtime or the file set changes, CORS wide open.
+
+**It must be reached over HTTPS.** The app is served over HTTPS from GitHub Pages, and a browser
+refuses `http://` from an `https://` page, so a LAN address cannot work — a locally-trusted cert or
+serving the app from the laptop were the alternatives, and the latter also costs PKCE sign-in because
+`crypto.subtle` is absent on an insecure origin. The chosen route is a tunnel:
+
+```bash
+python serve_review.py --dir ./out --port 8000
+cloudflared tunnel --url http://localhost:8000
+```
+
+The https URL goes in Settings → *Land-cover server*, which also shows a live reachability line.
+
+In the app: **Land cover from server** in the `⋯` panel, disabled until a server is set. It fetches
+`/index`, takes every tile whose bbox *overlaps* `dataBounds()` (overlap, not containment — a parcel
+straddling the view edge still matters), caps at 12 tiles a go, parses each with `parseOsmXml` so
+holes survive, and filters by class. Classes are **opt-out**, listed in settings, so a class the
+importer starts emitting later appears rather than being silently dropped. With no tile covering the
+view it names the nearest one's centre instead of saying nothing.
+
+Buildings never touch any of this.
 
 ## Nothing is sent without being read first
 

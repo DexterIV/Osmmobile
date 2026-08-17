@@ -141,4 +141,60 @@ t('an empty or degenerate hole is ignored rather than emitted', () => {
   assert.match(x, /<way[\s\S]*landuse/);
 });
 
+// --- the land-cover server client: class filter and tile selection ----------
+const lcFrom = src.indexOf('function lcServer()');
+const lcTo = src.indexOf('async function loadLandCover(');
+assert.ok(lcFrom > 0 && lcTo > lcFrom, 'could not locate the land-cover client in src/app.js');
+const mkLc = new Function('S', 'AREA_KEYS', 'fetchOk', 'LC_CLASSES',
+  src.slice(lcFrom, lcTo) + '; return { lcServer, lcEnabled, candidateClass, bboxHits };');
+const lc = (S) => mkLc(S, AREA_KEYS, null, []);
+
+t('the server URL is normalised, and empty means off', () => {
+  assert.equal(lc({ lcServer: 'https://x.trycloudflare.com/' }).lcServer(), 'https://x.trycloudflare.com');
+  assert.equal(lc({ lcServer: '  https://x.dev//  ' }).lcServer(), 'https://x.dev');
+  assert.equal(lc({ lcServer: '' }).lcServer(), '');
+  assert.equal(lc({}).lcServer(), '');
+});
+
+t('classes are opt-out, so a newly emitted class is not silently dropped', () => {
+  const a = lc({ lcOff: [] });
+  assert.equal(a.lcEnabled('landuse=farmland'), true);
+  assert.equal(a.lcEnabled('landuse=something_new'), true, 'unknown classes must default to on');
+  const b = lc({ lcOff: ['landuse=farmland'] });
+  assert.equal(b.lcEnabled('landuse=farmland'), false);
+  assert.equal(b.lcEnabled('landuse=meadow'), true);
+});
+
+t('a candidate reports the class the filter keys on', () => {
+  const f = lc({}).candidateClass;
+  assert.equal(f({ tags: { landuse: 'farmland', source: 'ARiMR 2025' } }), 'landuse=farmland');
+  assert.equal(f({ tags: { natural: 'wood' } }), 'natural=wood');
+  assert.equal(f({ tags: { building: 'yes' } }), 'building=yes');
+  assert.equal(f({ tags: { source: 'BDOT10k' } }), '', 'metadata alone is not a class');
+});
+
+t('tile selection keeps every tile that overlaps the view, not just containment', () => {
+  const B = (w, s2, e, n) => ({
+    getWest: () => w, getSouth: () => s2, getEast: () => e, getNorth: () => n,
+  });
+  const tiles = [
+    { id: 'inside', bbox: [20.99, 52.20, 21.00, 52.21] },
+    { id: 'straddles-west', bbox: [20.95, 52.20, 20.995, 52.21] },
+    { id: 'touching-edge', bbox: [21.00, 52.20, 21.02, 52.21] },
+    { id: 'far', bbox: [19.00, 51.60, 19.05, 51.62] },
+    { id: 'no-bbox' },
+    { id: 'short-bbox', bbox: [1, 2] },
+  ];
+  const hits = lc({}).bboxHits(tiles, B(20.99, 52.20, 21.00, 52.21)).map((x) => x.id);
+  assert.deepEqual(hits.sort(), ['inside', 'straddles-west', 'touching-edge'].sort());
+  assert.ok(!hits.includes('far'));
+  assert.ok(!hits.includes('no-bbox'), 'a malformed entry must not throw or match');
+  assert.ok(!hits.includes('short-bbox'));
+});
+
+t('a view outside every tile selects nothing rather than everything', () => {
+  const B = { getWest: () => 14.0, getSouth: () => 49.0, getEast: () => 14.01, getNorth: () => 49.01 };
+  assert.equal(lc({}).bboxHits([{ id: 'a', bbox: [20.99, 52.2, 21.0, 52.21] }], B).length, 0);
+});
+
 console.log('\nlanduse: ' + pass + ' groups passed');

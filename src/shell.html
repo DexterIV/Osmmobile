@@ -201,6 +201,11 @@ button.ghost{padding:11px;border-radius:7px;border:1px solid var(--line);backgro
   color:var(--text);font-family:var(--mono);font-size:11px;letter-spacing:.1em;
   text-transform:uppercase;width:100%}
 #tagPresets{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
+#lcClasses{display:flex;flex-wrap:wrap;gap:6px}
+#lcClasses label{display:inline-flex;align-items:center;gap:6px;margin:0;text-transform:none;
+  letter-spacing:0;font-size:11px;color:var(--text);border:1px solid var(--line);
+  border-radius:20px;padding:6px 10px;background:var(--panel2)}
+#lcClasses input{width:auto;flex:0 0 auto}
 #tagPresets button{flex:0 0 auto;border:1px dashed var(--line);background:none;color:var(--dim);
   border-radius:20px;padding:6px 10px;font-family:var(--mono);font-size:10.5px}
 #tagDone{border-color:#1d4f3e;color:var(--verify);background:#0f1c17}
@@ -287,7 +292,8 @@ input,select{width:100%;background:var(--ink);border:1px solid var(--line);color
     <button id="moreBtn">⋯</button>
   </div>
   <div class="startMore">
-    <button class="ghost" id="getDataBtn">Get this area's data ↗</button>
+    <button class="ghost" id="lcBtn" disabled>Land cover from server</button>
+      <button class="ghost" id="getDataBtn">Get this area's data ↗</button>
     <textarea id="pasteBox" placeholder="…then paste the .osm or GeoJSON text here"></textarea>
     <button class="ghost" id="pasteBtn">Load pasted data</button>
     <button class="ghost" id="pickBtn" disabled>Loading…</button>
@@ -386,6 +392,16 @@ input,select{width:100%;background:var(--ink);border:1px solid var(--line);color
       <div><label>Source tag</label><input id="sSource"></div>
       <div><label>Objects per changeset</label><input id="sBatch" type="number" min="1" max="500"></div>
     </div>
+
+    <label>Land-cover server (vibe-osm-importer <code>serve_review.py</code>)</label>
+    <input id="sLcServer" placeholder="https://…trycloudflare.com">
+    <p class="note">Run <b>serve_review.py --dir ./out</b> on the laptop and expose it with
+      <b>cloudflared tunnel --url http://localhost:8000</b>, then paste the https URL here. It must be
+      https: a browser refuses plain http from this page. Leave empty and land cover is simply off —
+      building review does not use this at all.</p>
+    <p id="lcStatus" class="note"></p>
+    <label>Land-cover classes to review</label>
+    <div id="lcClasses"></div>
 
     <label>Source repository (changeset <code>repo</code> tag)</label>
     <input id="sRepo" placeholder="https://github.com/DexterIV/Osmmobile">
