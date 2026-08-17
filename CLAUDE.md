@@ -150,6 +150,41 @@ Verified in a browser: a cell loads in ~190 ms with 47 footprints, a candidate c
 footprint reads `covered by an OSM building`, the duplicate check reports `5 already in OSM here`,
 and 53 dashed footprints plus house-number labels draw on screen.
 
+## Provenance and staleness — why demolished buildings are still in the data
+
+The candidates are **BDOT10k** (GUGiK's 1:10 000 topographic database) for buildings and **PRG** for
+addresses, ingested by gugik2osm and diffed against OSM. They are **not** *ewidencja budynków* /
+**EGiB**, the county-maintained cadastre, which is usually more current. The two disagree, and BDOT
+being behind is the normal case rather than a fault.
+
+The tiles carry a per-building currency date, `aktualnosc_geometrii`, and a separate
+`aktualnosc_atrybutow` for the attributes. Measured over 644 buildings sampled from 15 Polish cities:
+
+| geometry year | share | | attribute year | share |
+|---|---|---|---|---|
+| 2011–2014 | 9.0% | | 2011–2019 | 13.9% |
+| **2015** | **32.8%** | | 2020 | 21.9% |
+| 2017–2018 | 16.4% | | 2021–2022 | 26.7% |
+| 2019–2020 | 5.6% | | 2023 | 26.7% |
+| 2021–2022 | 19.1% | | 2024 | 10.7% |
+| 2023–2024 | 17.1% | | | |
+
+So roughly **half the geometry is 2018 or older and a third dates from 2015**. A building demolished
+for a road built since then is still present, and correctly so as far as BDOT is concerned. This is
+the explanation for the reported case of buildings near a new highway that EGiB no longer shows.
+
+`status_bdot` is also worth attention: 632 of the 644 were `eksploatowany`, but **12 were
+`w budowie`** — under construction at survey time. Those may now be finished, altered, or never
+completed, and `building=yes` is probably the wrong tag for them.
+
+Both fields are now **shown while reviewing** — `#srcAge` in the top strip, dim under 3 years, ochre
+from 3, red from 7, and red for any status other than `eksploatowany`. Neither is uploaded: they are
+not OSM tags, and `tagsFromTile` promotes only the OSM keys. There is a regression test for that in
+the browser check (`tagsHaveBdotMeta` must stay `no`).
+
+Upstream publishes no freshness metadata of its own — `/processes.json` and `/updates.geojson` both
+return an empty body — so this per-object date is the only signal available.
+
 ### CORS reality, measured 2026-08-16
 
 Counted with `curl -D -` over 8 GETs per endpoint, then confirmed in headless Edge against the real

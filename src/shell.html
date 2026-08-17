@@ -30,6 +30,14 @@ body{display:flex;flex-direction:column;padding-top:env(safe-area-inset-top);pad
 .tier.t1{color:var(--ochre);border-color:#4d3c14;background:#1f1809}
 .tier.t2{color:var(--strike);border-color:#4d1f1d;background:#1f0e0d}
 #dist,#drift{color:var(--dim)}
+/* How old the BDOT geometry is. The tiles carry aktualnosc_geometrii per
+   building and it was being discarded — a third of it is from 2015, which is
+   exactly why demolished buildings still appear. */
+#srcAge{font-family:var(--mono);font-size:10px;letter-spacing:.06em;padding:2px 5px;
+  border-radius:3px;border:1px solid transparent;white-space:nowrap}
+#srcAge.fresh{color:var(--dim)}
+#srcAge.aging{color:var(--ochre);border-color:#4d3c14;background:#1f1809}
+#srcAge.stale{color:var(--strike);border-color:#4d1f1d;background:#1f0e0d}
 #drift{color:var(--ochre)}
 .strip button{background:none;border:1px solid var(--line);color:var(--dim);font-family:var(--mono);
   font-size:11px;padding:4px 8px;border-radius:4px}
@@ -231,6 +239,7 @@ input,select{width:100%;background:var(--ink);border:1px solid var(--line);color
   <span class="tier t0" id="tier">—</span>
   <span id="dist"></span>
   <span id="drift"></span>
+  <span id="srcAge"></span>
   <span class="grow" id="locality"></span>
   <button id="userBtn">sign in</button>
   <button id="uploadBtn" disabled>↑<span id="upCount">0</span></button>

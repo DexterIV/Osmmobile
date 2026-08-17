@@ -10,13 +10,13 @@
 //
 // Source: https://github.com/DexterIV/Osmmobile
 
-// Generated to ./sw.js by build.mjs, which substitutes b32801ab4e4d with a
+// Generated to ./sw.js by build.mjs, which substitutes 66db66f06503 with a
 // hash of the built index.html. That substitution is the whole point: a
 // browser only looks for an updated service worker when sw.js itself changes
 // byte for byte. With a fixed cache name and a fixed body, an installed copy
 // served its first cached index.html forever and no later deploy could ever
 // reach the device.
-const VERSION = 'b32801ab4e4d';
+const VERSION = '66db66f06503';
 const CACHE = 'orto-review-' + VERSION;
 const SHELL = [
   './', './index.html', './manifest.webmanifest',

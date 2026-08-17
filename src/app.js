@@ -851,6 +851,12 @@ async function fetchAreaTiles(bounds) {
           ring: ring.map(([px, py]) => tilePointToLatLon(TILE_DATA_Z, t.x, t.y, px, py, L.extent)),
           tags: tagsFromTile(f.props),
           srcId: id,
+          // Provenance, kept off the uploaded tags but shown while reviewing.
+          // BDOT10k geometry is frequently years old — measured across 644
+          // buildings, a third dated from 2015 — which is why a demolished
+          // building can still be in the data.
+          srcDate: f.props.aktualnosc_geometrii ? String(f.props.aktualnosc_geometrii) : '',
+          srcStatus: f.props.status_bdot ? String(f.props.status_bdot) : '',
         });
       }
     }
@@ -1725,7 +1731,48 @@ function paintChrome() {
     : c && c.dist < 1e8 ? fmt(c.dist, 0) + ' m' : 'no OSM near';
   const d = c ? driftMeters() : 0;
   $('drift').textContent = d > 0.05 ? '+' + fmt(d, 1) + ' m moved' : '';
+  paintSrcAge(c);
   $('stepLbl').textContent = fmt(S.driftStep, 2).replace(/0$/, '') + ' m';
+}
+
+// How old the source geometry is, and whether BDOT thought the building was
+// still going up. Neither is an OSM tag and neither is uploaded, but both change
+// what a reviewer should conclude from the imagery:
+//
+//  - `aktualnosc_geometrii` is the currency date of the outline. Across 644
+//    sampled buildings roughly half were 2018 or older and a third dated from
+//    2015, so a building demolished for a road built since then is still in the
+//    data, correctly, as far as BDOT is concerned. BDOT10k is not the cadastre
+//    (EGiB), and the two disagree.
+//  - `status_bdot = w budowie` means it was under construction at survey time.
+//    It may now be finished, altered, or never completed, and `building=yes` is
+//    probably the wrong tag for it.
+const YEAR_MS = 365.25 * 24 * 3600e3;
+
+function paintSrcAge(c) {
+  const el = $('srcAge');
+  if (!c || (!c.srcDate && !c.srcStatus)) { el.textContent = ''; el.className = ''; return; }
+  const parts = [];
+  let cls = 'fresh';
+  if (c.srcDate) {
+    const t = Date.parse(c.srcDate);
+    if (Number.isFinite(t)) {
+      const yrs = (Date.now() - t) / YEAR_MS;
+      parts.push('geom ' + c.srcDate.slice(0, 4) + ' · ' + yrs.toFixed(0) + ' yr');
+      cls = yrs >= 7 ? 'stale' : yrs >= 3 ? 'aging' : 'fresh';
+    } else {
+      parts.push('geom ' + c.srcDate);
+    }
+  }
+  if (c.srcStatus && c.srcStatus !== 'eksploatowany') {
+    parts.push(c.srcStatus);
+    cls = 'stale';
+  }
+  el.textContent = parts.join(' · ');
+  el.className = cls;
+  el.title = 'BDOT10k geometry currency' +
+    (c.srcStatus ? ', status ' + c.srcStatus : '') +
+    '. Not the cadastre (EGiB) — the two can disagree.';
 }
 
 function paintTags() {

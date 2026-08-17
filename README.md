@@ -79,6 +79,20 @@ cannot be read from a web app at all, whoever hosts it. Consequently:
 `CLAUDE.md` records the measurements behind all of that, including how to re-check it if the upstream
 headers are fixed.
 
+### How stale is the input?
+
+Buildings come from **BDOT10k**, GUGiK's topographic database — **not** from *ewidencja budynków*
+(EGiB), the county cadastre, which is usually more current. Expect the two to disagree.
+
+Each building carries its own geometry currency date. Sampled over 644 buildings in 15 cities, about
+**half the geometry is 2018 or older and a third dates from 2015**. A building demolished for a road
+built since then is therefore still in the data. The app shows that date for every candidate, in ochre
+past three years and red past seven, so you can judge how much to trust the outline before comparing it
+with the imagery. Buildings that BDOT recorded as `w budowie` — under construction — are flagged the
+same way.
+
+None of that metadata is uploaded; it is not OSM tagging, it is there to inform the review.
+
 ## Uploading
 
 OAuth 2 with PKCE. Register an application at
