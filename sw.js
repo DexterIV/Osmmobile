@@ -1,10 +1,10 @@
-// Generated to ./sw.js by build.mjs, which substitutes b2871bb1af2c with a
+// Generated to ./sw.js by build.mjs, which substitutes 6792835e31cc with a
 // hash of the built index.html. That substitution is the whole point: a
 // browser only looks for an updated service worker when sw.js itself changes
 // byte for byte. With a fixed cache name and a fixed body, an installed copy
 // served its first cached index.html forever and no later deploy could ever
 // reach the device.
-const VERSION = 'b2871bb1af2c';
+const VERSION = '6792835e31cc';
 const CACHE = 'orto-review-' + VERSION;
 const SHELL = [
   './', './index.html', './manifest.webmanifest',

@@ -1419,8 +1419,12 @@ function attachPointDrag() {
   el.addEventListener('pointercancel', end);
 }
 
+// Snapshots tags as well as geometry, so Z undoes a tag edit too. It used to
+// store the ring alone, which meant an accidental tag change was unrecoverable.
 function pushUndo() {
-  undoStack.push(cur().ring.map((p) => p.slice()));
+  const c = cur();
+  if (!c) return;
+  undoStack.push({ ring: c.ring.map((p) => p.slice()), tags: Object.assign({}, c.tags) });
   if (undoStack.length > 40) undoStack.shift();
   $('undoBtn').disabled = false;
 }
@@ -1428,10 +1432,13 @@ function pushUndo() {
 function undo() {
   if (!undoStack.length || !cur()) return;
   const c = cur();
-  c.ring = undoStack.pop();
+  const prev = undoStack.pop();
+  c.ring = prev.ring;
+  c.tags = prev.tags;
   if (c.kind === 'building') { shape.setLatLngs(c.ring); drawVertices(); }
   else shape.setLatLng(c.ring[0]);
   $('undoBtn').disabled = !undoStack.length;
+  paintTags();
   paintChrome();
 }
 
@@ -1718,18 +1725,127 @@ function paintTags() {
     const chip = document.createElement('button');
     chip.className = 'chip';
     chip.innerHTML = '<b>' + esc(k) + '</b>' + esc(c.tags[k]);
-    chip.onclick = () => {
-      delete c.tags[k];
-      paintTags();
-    };
+    // Opens the editor focused on this tag. It used to delete the tag outright
+    // on a single tap, with no confirmation and no undo — far too easy to hit by
+    // accident on a phone, and the only tag interaction there was.
+    chip.onclick = () => openTagEditor(k);
     box.appendChild(chip);
   }
-  if (!keys.length) {
-    const s = document.createElement('span');
-    s.className = 'muted';
-    s.textContent = 'No tags';
-    box.appendChild(s);
+  const add = document.createElement('button');
+  add.className = 'chip add';
+  add.textContent = keys.length ? '+ tag' : '+ add tags';
+  add.onclick = () => openTagEditor(null);
+  box.appendChild(add);
+}
+
+// Keys worth one tap on a phone: what BDOT/PRG candidates routinely need
+// corrected or completed against the imagery.
+const TAG_PRESETS = [
+  'building', 'building:levels', 'addr:housenumber', 'addr:street', 'addr:city',
+  'addr:postcode', 'amenity', 'shop', 'man_made', 'note', 'fixme', 'demolished:building',
+];
+
+let tagDraft = null;   // [[key, value], ...] while the sheet is open
+
+function openTagEditor(focusKey) {
+  const c = cur();
+  if (!c) return;
+  tagDraft = Object.entries(c.tags).map(([k, v]) => [k, String(v)]);
+  if (!tagDraft.length) tagDraft.push(['', '']);
+  paintTagRows(focusKey);
+  $('tagSheet').classList.add('open');
+}
+
+function closeTagEditor() {
+  $('tagSheet').classList.remove('open');
+  tagDraft = null;
+}
+
+function paintTagRows(focusKey) {
+  const box = $('tagRows');
+  box.innerHTML = '';
+  const seen = new Map();
+  for (const [k] of tagDraft) {
+    const t = k.trim();
+    if (t) seen.set(t, (seen.get(t) || 0) + 1);
   }
+  tagDraft.forEach(([k, v], i) => {
+    const row = document.createElement('div');
+    row.className = 'tagRow';
+    const ki = document.createElement('input');
+    ki.className = 'k';
+    ki.value = k;
+    ki.placeholder = 'key';
+    ki.autocapitalize = 'none';
+    ki.spellcheck = false;
+    if (k.trim() && seen.get(k.trim()) > 1) ki.classList.add('dup');
+    ki.oninput = () => { tagDraft[i][0] = ki.value; };
+    // Re-render on blur so duplicate highlighting stays honest without
+    // stealing focus mid-typing.
+    ki.onblur = () => paintTagRows(null);
+    const vi = document.createElement('input');
+    vi.value = v;
+    vi.placeholder = 'value';
+    vi.autocapitalize = 'none';
+    vi.spellcheck = false;
+    vi.oninput = () => { tagDraft[i][1] = vi.value; };
+    const del = document.createElement('button');
+    del.textContent = '×';
+    del.title = 'Remove this tag';
+    del.onclick = () => { tagDraft.splice(i, 1); paintTagRows(null); };
+    row.appendChild(ki);
+    row.appendChild(vi);
+    row.appendChild(del);
+    box.appendChild(row);
+    if (focusKey !== null && k === focusKey) setTimeout(() => vi.focus(), 30);
+  });
+
+  const pre = $('tagPresets');
+  pre.innerHTML = '';
+  const have = new Set(tagDraft.map(([k]) => k.trim()));
+  for (const k of TAG_PRESETS) {
+    if (have.has(k)) continue;
+    const b = document.createElement('button');
+    b.textContent = '+ ' + k;
+    b.onclick = () => {
+      tagDraft.push([k, '']);
+      paintTagRows(k);
+    };
+    pre.appendChild(b);
+  }
+}
+
+// Draft rows to a tag object. Pure, so it can be tested without a DOM.
+// A key with no value is not a tag OSM will accept and an empty key is
+// meaningless, so both are dropped rather than uploaded as junk; a half-filled
+// row is counted as dropped so the user is told, while a wholly blank row is
+// just an unused input and is silent. On a duplicate key the last row wins,
+// matching the visible top-to-bottom reading of the sheet.
+function tagsFromDraft(draft) {
+  const tags = {};
+  let dropped = 0;
+  for (const [k, v] of draft) {
+    const key = String(k).trim();
+    const val = String(v).trim();
+    if (!key || !val) { if (key || val) dropped++; continue; }
+    tags[key] = val;
+  }
+  return { tags, dropped };
+}
+
+function commitTags() {
+  const c = cur();
+  if (!c || !tagDraft) { closeTagEditor(); return; }
+  const { tags: next, dropped } = tagsFromDraft(tagDraft);
+  const before = JSON.stringify(c.tags);
+  if (JSON.stringify(next) === before) { closeTagEditor(); return; }
+  pushUndo();
+  c.tags = next;
+  c.tagsEdited = true;
+  closeTagEditor();
+  paintTags();
+  paintChrome();
+  toast(Object.keys(next).length + ' tags' + (dropped ? ', ' + dropped + ' incomplete dropped' : ''));
 }
 
 async function autoAlign() {
@@ -1876,12 +1992,19 @@ function b64url(buf) {
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
+// The authorize and token requests must send a byte-identical redirect_uri, and
+// it must equal the registered one. These were computed in two places and did
+// not agree: login stripped any fragment, finishLogin did not.
+function redirectUri() {
+  return location.href.split('?')[0].split('#')[0];
+}
+
 async function login() {
   if (!S.clientId) { openSettings(); toast('Paste an OAuth client ID first', 'warn'); return; }
   const verifier = b64url(crypto.getRandomValues(new Uint8Array(48)));
   const challenge = b64url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
   sessionStorage.setItem('pkce', verifier);
-  const redirect = location.href.split('?')[0].split('#')[0];
+  const redirect = redirectUri();
   location.href = OSM + '/oauth2/authorize?client_id=' + encodeURIComponent(S.clientId) +
     '&redirect_uri=' + encodeURIComponent(redirect) + '&response_type=code' +
     '&scope=' + encodeURIComponent('read_prefs write_api') +
@@ -1893,20 +2016,55 @@ async function finishLogin() {
   const code = p.get('code');
   if (!code) return;
   const verifier = sessionStorage.getItem('pkce');
-  const redirect = location.href.split('?')[0];
+  const redirect = redirectUri();
   history.replaceState({}, '', redirect);
-  if (!verifier) return;
+  if (!verifier) {
+    // sessionStorage is per-tab, so finishing the flow in a different tab or
+    // window loses the verifier. This used to return in silence.
+    authFail('the PKCE verifier was lost — start and finish sign-in in the same tab');
+    return;
+  }
   const body = new URLSearchParams({
     grant_type: 'authorization_code', code, redirect_uri: redirect,
     client_id: S.clientId, code_verifier: verifier,
   });
   const r = await fetch(OSM + '/oauth2/token', { method: 'POST', body });
-  if (!r.ok) { toast('Sign-in failed: ' + r.status, 'warn'); return; }
+  if (!r.ok) {
+    // The status alone was all this used to report, which hid the one thing
+    // that identifies the fault. OSM answers 401 invalid_client when the app is
+    // registered as confidential, or when the client id is simply unknown.
+    const j = await r.json().catch(() => null);
+    const err = (j && j.error) || ('HTTP ' + r.status);
+    let hint;
+    if (r.status === 401 || err === 'invalid_client') {
+      hint = 'the OAuth app must be a public client — edit it on openstreetmap.org and untick ' +
+        '“Confidential application?”, and check the client ID matches exactly';
+    } else if (err === 'invalid_grant') {
+      hint = 'the redirect URI must equal ' + redirect +
+        ' exactly, and an authorization code can only be used once — start sign-in again';
+    } else {
+      hint = (j && j.error_description) || 'see the browser console for the response';
+    }
+    console.warn('oauth token exchange failed', r.status, j);
+    authFail(err + ' — ' + hint);
+    return;
+  }
   const j = await r.json();
   await dbPut('kv', 'token', j.access_token);
   sessionStorage.removeItem('pkce');
+  await dbDel('kv', 'authError');
   paintUser();
   toast('Signed in to OpenStreetMap');
+}
+
+// A toast lasts three seconds and this needs reading while you fix the
+// registration, so the reason is also parked in settings beside the client ID.
+async function authFail(msg) {
+  await dbPut('kv', 'authError', msg).catch(() => {});
+  const el = $('authNote');
+  if (el) { el.textContent = 'Last sign-in attempt: ' + msg; el.style.color = 'var(--ochre)'; }
+  toast('Sign-in failed: ' + msg, 'warn');
+  openSettings();
 }
 
 async function token() { return await dbGet('kv', 'token'); }
@@ -1980,6 +2138,12 @@ function paintSettings() {
   $('sHashtags').value = S.hashtags;
   $('sImportTag').checked = !!S.importTag;
   $('sClient').value = S.clientId;
+  dbGet('kv', 'authError').then((m) => {
+    const el = $('authNote');
+    if (!el) return;
+    el.textContent = m ? 'Last sign-in attempt: ' + m : '';
+    el.style.color = 'var(--ochre)';
+  }).catch(() => {});
   $('sApiBase').value = S.apiBase;
   $('sReport').checked = !!S.reportRejects;
   $('sSelfUrl').value = location.href.split('?')[0].split('#')[0];
@@ -2053,6 +2217,11 @@ function bindUI() {
     const [dx, dy] = b.dataset.dir.split(',').map(Number);
     b.onclick = () => nudge(dx * S.driftStep, dy * S.driftStep);
   }
+  $('tagAdd').onclick = () => { tagDraft.push(['', '']); paintTagRows(null); };
+  $('tagCancel').onclick = closeTagEditor;
+  $('tagDone').onclick = commitTags;
+  // Tapping the dimmed backdrop cancels, matching the settings sheet.
+  $('tagSheet').onclick = (e) => { if (e.target === $('tagSheet')) closeTagEditor(); };
   $('gearBtn').onclick = openSettings;
   $('sheetClose').onclick = closeSettings;
   $('sheetSave').onclick = saveSettings;
@@ -2069,7 +2238,14 @@ function bindUI() {
   const NUDGE = { ArrowUp: [0, 1], ArrowDown: [0, -1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] };
   addEventListener('keydown', (e) => {
     if ($('sheet').classList.contains('open')) return;
-    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+    if ($('tagSheet').classList.contains('open')) {
+      if (e.key === 'Escape') closeTagEditor();
+      return;
+    }
+    // TEXTAREA was missing, so typing in the paste box fired verdicts and
+    // nudged the outline — an 'a' in pasted text would accept the candidate.
+    const tn = e.target.tagName;
+    if (tn === 'INPUT' || tn === 'SELECT' || tn === 'TEXTAREA' || e.target.isContentEditable) return;
     const k = e.key;
     if (NUDGE[k]) {
       e.preventDefault();

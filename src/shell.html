@@ -83,7 +83,8 @@ path.cand{filter:drop-shadow(0 0 4px rgba(255,45,149,.5))}
 .chip{flex:0 0 auto;border:1px solid var(--line);background:var(--panel2);color:var(--text);
   border-radius:5px;padding:5px 8px;font-family:var(--mono);font-size:11px;white-space:nowrap}
 .chip b{color:var(--ctx);font-weight:500;margin-right:5px}
-.chip:active{border-color:var(--strike);text-decoration:line-through;opacity:.6}
+.chip:active{border-color:var(--ctx);opacity:.7}
+.chip.add{border-style:dashed;color:var(--dim)}
 .muted{color:var(--dim);font-family:var(--mono);font-size:11px;padding:5px}
 
 #bar{flex:0 0 auto;display:grid;grid-template-columns:1fr 1fr 1.3fr;height:var(--bar);
@@ -138,6 +139,29 @@ path.cand{filter:drop-shadow(0 0 4px rgba(255,45,149,.5))}
   opacity:0;pointer-events:none;transform:translateY(8px);transition:.18s}
 #toast.show{opacity:1;transform:none}
 #toast.warn{border-left-color:var(--ochre);color:#f6d99a}
+
+/* Tag editor. Same shape as the settings sheet but its own overlay, so opening
+   it from a chip does not disturb settings state. z-index above #sheet so it can
+   never end up behind it. */
+#tagSheet{position:absolute;inset:0;z-index:820;background:rgba(6,9,12,.6);display:none}
+#tagSheet.open{display:block}
+#tagSheetBody{position:absolute;left:0;right:0;bottom:0;max-height:90%;overflow-y:auto;
+  background:var(--panel);border-top:1px solid var(--line);border-radius:14px 14px 0 0;padding:16px}
+#tagSheetBody h3{margin:0 0 4px;font-size:13px;letter-spacing:.02em}
+.tagRow{display:grid;grid-template-columns:1fr 1.2fr 34px;gap:7px;margin-bottom:7px}
+.tagRow input{padding:9px}
+.tagRow input.k{color:var(--ctx)}
+.tagRow button{border:1px solid var(--line);background:var(--panel2);color:var(--strike);
+  border-radius:6px;font-size:15px;line-height:1}
+.tagRow input.dup{border-color:var(--ochre)}
+#tagAdd{margin-top:4px}
+button.ghost{padding:11px;border-radius:7px;border:1px solid var(--line);background:var(--panel2);
+  color:var(--text);font-family:var(--mono);font-size:11px;letter-spacing:.1em;
+  text-transform:uppercase;width:100%}
+#tagPresets{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
+#tagPresets button{flex:0 0 auto;border:1px dashed var(--line);background:none;color:var(--dim);
+  border-radius:20px;padding:6px 10px;font-family:var(--mono);font-size:10.5px}
+#tagDone{border-color:#1d4f3e;color:var(--verify);background:#0f1c17}
 
 #sheet{position:absolute;inset:0;z-index:800;background:rgba(6,9,12,.6);display:none}
 #sheet.open{display:block}
@@ -240,6 +264,20 @@ input,select{width:100%;background:var(--ink);border:1px solid var(--line);color
 
 <input type="file" id="file" accept=".osm,.xml,.json,.geojson" style="display:none">
 
+<div id="tagSheet">
+  <div id="tagSheetBody">
+    <h3>Tags</h3>
+    <p class="hint">These are what get uploaded. Empty keys are dropped.</p>
+    <div id="tagRows"></div>
+    <button id="tagAdd" class="ghost">+ Add tag</button>
+    <div id="tagPresets"></div>
+    <div class="sheetActions">
+      <button id="tagCancel">Cancel</button>
+      <button id="tagDone">Done</button>
+    </div>
+  </div>
+</div>
+
 <div id="sheet">
   <div id="sheetBody">
     <h3>Settings</h3>
@@ -299,7 +337,12 @@ input,select{width:100%;background:var(--ink);border:1px solid var(--line);color
 
     <label>OSM OAuth 2 client ID</label>
     <input id="sClient" placeholder="from openstreetmap.org → OAuth 2 applications">
-    <p class="note">Register an app on openstreetmap.org with this page's exact URL as the redirect URI, scopes <b>read_prefs</b> and <b>write_api</b>, and tick "public client / PKCE". The URL is shown below — copy it from here.</p>
+    <p class="note">Register an app on openstreetmap.org with this page's exact URL as the redirect
+      URI and scopes <b>read_prefs</b> + <b>write_api</b>. Crucially, leave <b>“Confidential
+      application?” unticked</b> — a browser app holds no secret, and a confidential registration
+      makes the token step fail with <b>401 invalid_client</b>. The URL is shown below; copy it from
+      here rather than typing it.</p>
+    <p id="authNote" class="note"></p>
     <label>This page's URL (use as redirect URI)</label>
     <input id="sSelfUrl" readonly onclick="this.select()">
 

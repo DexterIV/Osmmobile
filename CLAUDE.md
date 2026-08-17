@@ -40,6 +40,7 @@ That check exists because a missing id previously shipped as a runtime crash.
 | `test/retry.test.mjs` | retry/timeout helpers, sliced out of `app.js` and run against a stub fetch |
 | `test/mvt.test.mjs` | the hand-written vector-tile decoder, against real captured tiles |
 | `test/context.test.mjs` | overlap and duplicate-address verdicts, against real OSM footprints |
+| `test/tags.test.mjs` | the tag editor's draft-to-tags normalisation |
 | `test/parse.test.mjs` | the wasm `.osm` scanner, against a real captured `/josm_data` response |
 | `test/fixtures/` | live captures: a `/josm_data` export, z14 buildings and z6 cluster tiles, an OSM `/map` cell |
 | `setup.sh` | WSL bootstrap: deps, gh auth, build, push, enable Pages, serve |
@@ -288,6 +289,23 @@ OAuth 2 PKCE, public client, no secret. Redirect URI must match exactly, lowerca
 slash: `https://dexteriv.github.io/Osmmobile/`. Scopes `read_prefs` and `write_api`. The settings
 sheet shows a tappable field containing the live URL — use it rather than typing.
 
+**`401` from `/oauth2/token` is always `invalid_client`**, verified against the live endpoint:
+*"Client authentication failed: unknown client, no authentication provided, or unsupported
+authentication method."* It means the registration is **confidential** — so OSM demands a client
+secret the browser cannot hold — or the client id does not match. On the registration form
+**“Confidential application?” must be unticked.** A wrong redirect URI or a reused code gives `400
+invalid_grant` instead, so the status tells you which of the two it is.
+
+The token exchange used to report only the status code, which hid exactly this. It now reads the
+error body, gives the specific remedy, and parks the reason in the settings sheet next to the client
+id, because a toast is gone long before you have finished editing the registration.
+
+`redirectUri()` is a single helper on purpose: `login` stripped the fragment and `finishLogin` did
+not, so the two requests could disagree about `redirect_uri` and earn a spurious `invalid_grant`.
+
+The PKCE verifier lives in `sessionStorage`, which is per-tab: finishing the flow in a different tab
+loses it. That case used to return silently and now says so.
+
 Changeset tags:
 
 ```
@@ -341,7 +359,14 @@ Each of these shipped once and was caught by testing:
    attribute and the label "Loading…", and nothing ever cleared either — `setControls` only touches
    `#pad`, `#padTools` and `#bar`. The file-open route was dead from the first commit and nobody
    noticed, because the button looked like it was still initialising. `bindUI` now enables it.
-9. **Treating a flaky network as blocked CORS.** A dropped request, a 5xx and a missing
+9. **Keyboard shortcuts firing while typing.** The `keydown` handler skipped `INPUT` and `SELECT` but
+   not `TEXTAREA`, so typing in the paste box nudged the outline and an `a` in pasted text accepted
+   the candidate. It now also skips `TEXTAREA` and `isContentEditable`, and ignores everything except
+   Escape while the tag sheet is open.
+10. **Deleting a tag on a single tap.** Tapping a tag chip used to delete it outright — no
+    confirmation, no undo, and it was the only tag interaction there was. Chips now open the editor,
+    and `pushUndo` snapshots tags as well as geometry so `Z` reverts a tag edit.
+11. **Treating a flaky network as blocked CORS.** A dropped request, a 5xx and a missing
    `Access-Control-Allow-Origin` all surface as the same opaque `fetch` rejection. Conflating them
    latched `pixelMode = 'blocked'` on the first mobile-data blip, which disabled auto-fit for the
    session *and* made every later tile bypass the IndexedDB cache. Missing CORS may only be inferred

@@ -83,7 +83,8 @@ path.cand{filter:drop-shadow(0 0 4px rgba(255,45,149,.5))}
 .chip{flex:0 0 auto;border:1px solid var(--line);background:var(--panel2);color:var(--text);
   border-radius:5px;padding:5px 8px;font-family:var(--mono);font-size:11px;white-space:nowrap}
 .chip b{color:var(--ctx);font-weight:500;margin-right:5px}
-.chip:active{border-color:var(--strike);text-decoration:line-through;opacity:.6}
+.chip:active{border-color:var(--ctx);opacity:.7}
+.chip.add{border-style:dashed;color:var(--dim)}
 .muted{color:var(--dim);font-family:var(--mono);font-size:11px;padding:5px}
 
 #bar{flex:0 0 auto;display:grid;grid-template-columns:1fr 1fr 1.3fr;height:var(--bar);
@@ -138,6 +139,29 @@ path.cand{filter:drop-shadow(0 0 4px rgba(255,45,149,.5))}
   opacity:0;pointer-events:none;transform:translateY(8px);transition:.18s}
 #toast.show{opacity:1;transform:none}
 #toast.warn{border-left-color:var(--ochre);color:#f6d99a}
+
+/* Tag editor. Same shape as the settings sheet but its own overlay, so opening
+   it from a chip does not disturb settings state. z-index above #sheet so it can
+   never end up behind it. */
+#tagSheet{position:absolute;inset:0;z-index:820;background:rgba(6,9,12,.6);display:none}
+#tagSheet.open{display:block}
+#tagSheetBody{position:absolute;left:0;right:0;bottom:0;max-height:90%;overflow-y:auto;
+  background:var(--panel);border-top:1px solid var(--line);border-radius:14px 14px 0 0;padding:16px}
+#tagSheetBody h3{margin:0 0 4px;font-size:13px;letter-spacing:.02em}
+.tagRow{display:grid;grid-template-columns:1fr 1.2fr 34px;gap:7px;margin-bottom:7px}
+.tagRow input{padding:9px}
+.tagRow input.k{color:var(--ctx)}
+.tagRow button{border:1px solid var(--line);background:var(--panel2);color:var(--strike);
+  border-radius:6px;font-size:15px;line-height:1}
+.tagRow input.dup{border-color:var(--ochre)}
+#tagAdd{margin-top:4px}
+button.ghost{padding:11px;border-radius:7px;border:1px solid var(--line);background:var(--panel2);
+  color:var(--text);font-family:var(--mono);font-size:11px;letter-spacing:.1em;
+  text-transform:uppercase;width:100%}
+#tagPresets{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
+#tagPresets button{flex:0 0 auto;border:1px dashed var(--line);background:none;color:var(--dim);
+  border-radius:20px;padding:6px 10px;font-family:var(--mono);font-size:10.5px}
+#tagDone{border-color:#1d4f3e;color:var(--verify);background:#0f1c17}
 
 #sheet{position:absolute;inset:0;z-index:800;background:rgba(6,9,12,.6);display:none}
 #sheet.open{display:block}
@@ -906,6 +930,20 @@ svg.leaflet-image-layer.leaflet-interactive path {
 
 <input type="file" id="file" accept=".osm,.xml,.json,.geojson" style="display:none">
 
+<div id="tagSheet">
+  <div id="tagSheetBody">
+    <h3>Tags</h3>
+    <p class="hint">These are what get uploaded. Empty keys are dropped.</p>
+    <div id="tagRows"></div>
+    <button id="tagAdd" class="ghost">+ Add tag</button>
+    <div id="tagPresets"></div>
+    <div class="sheetActions">
+      <button id="tagCancel">Cancel</button>
+      <button id="tagDone">Done</button>
+    </div>
+  </div>
+</div>
+
 <div id="sheet">
   <div id="sheetBody">
     <h3>Settings</h3>
@@ -965,7 +1003,12 @@ svg.leaflet-image-layer.leaflet-interactive path {
 
     <label>OSM OAuth 2 client ID</label>
     <input id="sClient" placeholder="from openstreetmap.org → OAuth 2 applications">
-    <p class="note">Register an app on openstreetmap.org with this page's exact URL as the redirect URI, scopes <b>read_prefs</b> and <b>write_api</b>, and tick "public client / PKCE". The URL is shown below — copy it from here.</p>
+    <p class="note">Register an app on openstreetmap.org with this page's exact URL as the redirect
+      URI and scopes <b>read_prefs</b> + <b>write_api</b>. Crucially, leave <b>“Confidential
+      application?” unticked</b> — a browser app holds no secret, and a confidential registration
+      makes the token step fail with <b>401 invalid_client</b>. The URL is shown below; copy it from
+      here rather than typing it.</p>
+    <p id="authNote" class="note"></p>
     <label>This page's URL (use as redirect URI)</label>
     <input id="sSelfUrl" readonly onclick="this.select()">
 
@@ -993,7 +1036,7 @@ svg.leaflet-image-layer.leaflet-interactive path {
 const WASM_B64="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aiADaiIDQQI2AgAgACADNgKgDCAAIAEQBguuBAMKfgF/AXwgAEL///////////8Ag0I0iEKVCH0iAUI/gyEEIAFCBoenQQN0QZAJaiILKQMAIQMgCykDCCECIAspAxAhASAEQgBSBEAgAyAEhiACQsAAIAR9IgWIhCEDIAIgBIYgASAFiIQhAiABIASGIAspAxggBYiEIQELIABC/////////weDQoCAgICAgIAIhCIEQv////8PgyEFIAJC/////w+DIgYgBEIgiCIHfiACQiCIIgIgBX4gBSAGfiIFQiCIfCIGQv////8Pg3whCCACIAd+IAZCIIh8IAhCIIh8JCggByABQiCIfiIBIAVC/////w+DIAhCIIZ8fCICIAFUrSMoIAMgBH58fCIDQgKGIAJCPoiEIgRCP4ciBSACQgKGhSECIAQgBUIBh4UiAXkhBiABIAaGIAJCwAAgBn2IhCIHQv////8PgyEBIAdCIIgiCEK0hKOLAn4gAUKitb/IDH4gAUK0hKOLAn4iCUIgiHwiCkL/////D4N8IQEgCEKitb/IDH4gCkIgiHwgAUIgiHwkKCAHukSEG3BRzJg4P6IgAiAGhrpEGC1EVPshOT+ioPwHIgIgCUL/////D4MgAUIghnwiAVatIygiB0ILiHy6JCYgB0I1hiABQguIhCACfLpEAAAAAAAA8DuiJCcjJkKAgICAgICA2DwgBkI0hn0gACAEhUKAgICAgICAgIB/g4S/IgyiJCYjJyAMoiQnIANCPocgBX2nC+8HAwV8A38BfiAAvSIJQiCIpyIGQR92IQggBkH/////B3EiBkH7w6T/A00EQCAGQZ7BmvIDSQRARAAAAAAAAPA/DwsgACAAoiIBIAGiIQJEAAAAAAAA8D8gAUQAAAAAAADgP6IiA6EiBEQAAAAAAADwPyAEoSADoSABIAEgASABRJAVyxmgAfo+okR3UcEWbMFWv6CiRExVVVVVVaU/oKIgAiACoiABIAFE1DiIvun6qL2iRMSxtL2e7iE+oKJErVKcgE9+kr6goqCiIABEAAAAAAAAAACioaCgDwsgBkGAgMD/B08EQCAAIAChDwsCfyAJQiCIp0H/////B3EiB0H8souABEkEQEEBIQYgCAR8IABEAABAVPsh+T+gIQBBfyEGIAdB+8Pk/wNHBHwgACAARDFjYhphtNA9oCIAoUQxY2IaYbTQPaAFIABEAABgGmG00D2gIgFEc3ADLooZozugIQAgASAAoURzcAMuihmjO6ALBSAARAAAQFT7Ifm/oCEAIAdB+8Pk/wNHBHwgACAARDFjYhphtNC9oCIAoUQxY2IaYbTQvaAFIABEAABgGmG00L2gIgFEc3ADLooZo7ugIQAgASAAoURzcAMuihmju6ALCyAAJCYkJyAGDAELIAdB+8PkiQRJBEAgB0EUdiIGIAAgAESDyMltMF/kP6KeIgNEAABAVPsh+T+ioSIAIANEMWNiGmG00D2iIgKhIgG9QiCIp0EUdkH/D3FrQRBLBEAgA0RzcAMuihmjO6IgACAAIANEAABgGmG00D2iIgGhIgChIAGhoSECIAYgACACoSIBvUIgiKdBFHZB/w9xa0ExSwRAIANEwUkgJZqDezmiIAAgACADRAAAAC6KGaM7oiIBoSIAoSABoaEhAiAAIAKhIQELCyABJCYgACABoSACoSQnIAP8AgwBC0EAIAkQCiIGayAGIAgbCyEGIyYhASMnIQIgBkEBcQR8IAEgAaIiACABoiEDIAEgACACRAAAAAAAAOA/oiADIAAgAER9/rFX4x3HPqJE1WHBGaABKr+gokSm+BARERGBP6AgACAAIACioiAARHzVz1o62eU9okTrnCuK5uVavqCioKKhoiACoSADRElVVVVVVcW/oqGhBSABIAGiIgMgA6IhBEQAAAAAAADwPyADRAAAAAAAAOA/oiIAoSIFRAAAAAAAAPA/IAWhIAChIAMgAyADIANEkBXLGaAB+j6iRHdRwRZswVa/oKJETFVVVVVVpT+goiAEIASiIAMgA0TUOIi+6fqovaJExLG0vZ7uIT6gokStUpyAT36SvqCioKIgASACoqGgoAsiAJogACAGQQFqQQJxGwsEACMNC6oCAQR/A0AgACABQQRrSARAIwAgAGotAABBPEYEfyMAIABBAWpqLQAAQfQARgVBAAsEfyMAIABBAmpqLQAAQeEARgVBAAsEfyMAIABBA2pqLQAAQecARgVBAAsEQCAAIQQDQCAEIwFIBH8jACAEai0AAEE+RwVBAAsEQCAEQQFqIQQMAQsLIABBBGogBEHrAEEAQQBBARADIgZBAE4EQEEBIQdBACEFA0AgAyAFSgRAAkAjACAFIAZqai0AACACIAVqLQAARwRA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";
 </script>
 <script>
-const BUILD_ID="b2871bb1af2c";
+const BUILD_ID="6792835e31cc";
 </script>
 <script>
 const R = 6378137;
@@ -2417,8 +2460,12 @@ function attachPointDrag() {
   el.addEventListener('pointercancel', end);
 }
 
+// Snapshots tags as well as geometry, so Z undoes a tag edit too. It used to
+// store the ring alone, which meant an accidental tag change was unrecoverable.
 function pushUndo() {
-  undoStack.push(cur().ring.map((p) => p.slice()));
+  const c = cur();
+  if (!c) return;
+  undoStack.push({ ring: c.ring.map((p) => p.slice()), tags: Object.assign({}, c.tags) });
   if (undoStack.length > 40) undoStack.shift();
   $('undoBtn').disabled = false;
 }
@@ -2426,10 +2473,13 @@ function pushUndo() {
 function undo() {
   if (!undoStack.length || !cur()) return;
   const c = cur();
-  c.ring = undoStack.pop();
+  const prev = undoStack.pop();
+  c.ring = prev.ring;
+  c.tags = prev.tags;
   if (c.kind === 'building') { shape.setLatLngs(c.ring); drawVertices(); }
   else shape.setLatLng(c.ring[0]);
   $('undoBtn').disabled = !undoStack.length;
+  paintTags();
   paintChrome();
 }
 
@@ -2716,18 +2766,127 @@ function paintTags() {
     const chip = document.createElement('button');
     chip.className = 'chip';
     chip.innerHTML = '<b>' + esc(k) + '</b>' + esc(c.tags[k]);
-    chip.onclick = () => {
-      delete c.tags[k];
-      paintTags();
-    };
+    // Opens the editor focused on this tag. It used to delete the tag outright
+    // on a single tap, with no confirmation and no undo — far too easy to hit by
+    // accident on a phone, and the only tag interaction there was.
+    chip.onclick = () => openTagEditor(k);
     box.appendChild(chip);
   }
-  if (!keys.length) {
-    const s = document.createElement('span');
-    s.className = 'muted';
-    s.textContent = 'No tags';
-    box.appendChild(s);
+  const add = document.createElement('button');
+  add.className = 'chip add';
+  add.textContent = keys.length ? '+ tag' : '+ add tags';
+  add.onclick = () => openTagEditor(null);
+  box.appendChild(add);
+}
+
+// Keys worth one tap on a phone: what BDOT/PRG candidates routinely need
+// corrected or completed against the imagery.
+const TAG_PRESETS = [
+  'building', 'building:levels', 'addr:housenumber', 'addr:street', 'addr:city',
+  'addr:postcode', 'amenity', 'shop', 'man_made', 'note', 'fixme', 'demolished:building',
+];
+
+let tagDraft = null;   // [[key, value], ...] while the sheet is open
+
+function openTagEditor(focusKey) {
+  const c = cur();
+  if (!c) return;
+  tagDraft = Object.entries(c.tags).map(([k, v]) => [k, String(v)]);
+  if (!tagDraft.length) tagDraft.push(['', '']);
+  paintTagRows(focusKey);
+  $('tagSheet').classList.add('open');
+}
+
+function closeTagEditor() {
+  $('tagSheet').classList.remove('open');
+  tagDraft = null;
+}
+
+function paintTagRows(focusKey) {
+  const box = $('tagRows');
+  box.innerHTML = '';
+  const seen = new Map();
+  for (const [k] of tagDraft) {
+    const t = k.trim();
+    if (t) seen.set(t, (seen.get(t) || 0) + 1);
   }
+  tagDraft.forEach(([k, v], i) => {
+    const row = document.createElement('div');
+    row.className = 'tagRow';
+    const ki = document.createElement('input');
+    ki.className = 'k';
+    ki.value = k;
+    ki.placeholder = 'key';
+    ki.autocapitalize = 'none';
+    ki.spellcheck = false;
+    if (k.trim() && seen.get(k.trim()) > 1) ki.classList.add('dup');
+    ki.oninput = () => { tagDraft[i][0] = ki.value; };
+    // Re-render on blur so duplicate highlighting stays honest without
+    // stealing focus mid-typing.
+    ki.onblur = () => paintTagRows(null);
+    const vi = document.createElement('input');
+    vi.value = v;
+    vi.placeholder = 'value';
+    vi.autocapitalize = 'none';
+    vi.spellcheck = false;
+    vi.oninput = () => { tagDraft[i][1] = vi.value; };
+    const del = document.createElement('button');
+    del.textContent = '×';
+    del.title = 'Remove this tag';
+    del.onclick = () => { tagDraft.splice(i, 1); paintTagRows(null); };
+    row.appendChild(ki);
+    row.appendChild(vi);
+    row.appendChild(del);
+    box.appendChild(row);
+    if (focusKey !== null && k === focusKey) setTimeout(() => vi.focus(), 30);
+  });
+
+  const pre = $('tagPresets');
+  pre.innerHTML = '';
+  const have = new Set(tagDraft.map(([k]) => k.trim()));
+  for (const k of TAG_PRESETS) {
+    if (have.has(k)) continue;
+    const b = document.createElement('button');
+    b.textContent = '+ ' + k;
+    b.onclick = () => {
+      tagDraft.push([k, '']);
+      paintTagRows(k);
+    };
+    pre.appendChild(b);
+  }
+}
+
+// Draft rows to a tag object. Pure, so it can be tested without a DOM.
+// A key with no value is not a tag OSM will accept and an empty key is
+// meaningless, so both are dropped rather than uploaded as junk; a half-filled
+// row is counted as dropped so the user is told, while a wholly blank row is
+// just an unused input and is silent. On a duplicate key the last row wins,
+// matching the visible top-to-bottom reading of the sheet.
+function tagsFromDraft(draft) {
+  const tags = {};
+  let dropped = 0;
+  for (const [k, v] of draft) {
+    const key = String(k).trim();
+    const val = String(v).trim();
+    if (!key || !val) { if (key || val) dropped++; continue; }
+    tags[key] = val;
+  }
+  return { tags, dropped };
+}
+
+function commitTags() {
+  const c = cur();
+  if (!c || !tagDraft) { closeTagEditor(); return; }
+  const { tags: next, dropped } = tagsFromDraft(tagDraft);
+  const before = JSON.stringify(c.tags);
+  if (JSON.stringify(next) === before) { closeTagEditor(); return; }
+  pushUndo();
+  c.tags = next;
+  c.tagsEdited = true;
+  closeTagEditor();
+  paintTags();
+  paintChrome();
+  toast(Object.keys(next).length + ' tags' + (dropped ? ', ' + dropped + ' incomplete dropped' : ''));
 }
 
 async function autoAlign() {
@@ -2874,12 +3033,19 @@ function b64url(buf) {
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
+// The authorize and token requests must send a byte-identical redirect_uri, and
+// it must equal the registered one. These were computed in two places and did
+// not agree: login stripped any fragment, finishLogin did not.
+function redirectUri() {
+  return location.href.split('?')[0].split('#')[0];
+}
+
 async function login() {
   if (!S.clientId) { openSettings(); toast('Paste an OAuth client ID first', 'warn'); return; }
   const verifier = b64url(crypto.getRandomValues(new Uint8Array(48)));
   const challenge = b64url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
   sessionStorage.setItem('pkce', verifier);
-  const redirect = location.href.split('?')[0].split('#')[0];
+  const redirect = redirectUri();
   location.href = OSM + '/oauth2/authorize?client_id=' + encodeURIComponent(S.clientId) +
     '&redirect_uri=' + encodeURIComponent(redirect) + '&response_type=code' +
     '&scope=' + encodeURIComponent('read_prefs write_api') +
@@ -2891,20 +3057,55 @@ async function finishLogin() {
   const code = p.get('code');
   if (!code) return;
   const verifier = sessionStorage.getItem('pkce');
-  const redirect = location.href.split('?')[0];
+  const redirect = redirectUri();
   history.replaceState({}, '', redirect);
-  if (!verifier) return;
+  if (!verifier) {
+    // sessionStorage is per-tab, so finishing the flow in a different tab or
+    // window loses the verifier. This used to return in silence.
+    authFail('the PKCE verifier was lost — start and finish sign-in in the same tab');
+    return;
+  }
   const body = new URLSearchParams({
     grant_type: 'authorization_code', code, redirect_uri: redirect,
     client_id: S.clientId, code_verifier: verifier,
   });
   const r = await fetch(OSM + '/oauth2/token', { method: 'POST', body });
-  if (!r.ok) { toast('Sign-in failed: ' + r.status, 'warn'); return; }
+  if (!r.ok) {
+    // The status alone was all this used to report, which hid the one thing
+    // that identifies the fault. OSM answers 401 invalid_client when the app is
+    // registered as confidential, or when the client id is simply unknown.
+    const j = await r.json().catch(() => null);
+    const err = (j && j.error) || ('HTTP ' + r.status);
+    let hint;
+    if (r.status === 401 || err === 'invalid_client') {
+      hint = 'the OAuth app must be a public client — edit it on openstreetmap.org and untick ' +
+        '“Confidential application?”, and check the client ID matches exactly';
+    } else if (err === 'invalid_grant') {
+      hint = 'the redirect URI must equal ' + redirect +
+        ' exactly, and an authorization code can only be used once — start sign-in again';
+    } else {
+      hint = (j && j.error_description) || 'see the browser console for the response';
+    }
+    console.warn('oauth token exchange failed', r.status, j);
+    authFail(err + ' — ' + hint);
+    return;
+  }
   const j = await r.json();
   await dbPut('kv', 'token', j.access_token);
   sessionStorage.removeItem('pkce');
+  await dbDel('kv', 'authError');
   paintUser();
   toast('Signed in to OpenStreetMap');
+}
+
+// A toast lasts three seconds and this needs reading while you fix the
+// registration, so the reason is also parked in settings beside the client ID.
+async function authFail(msg) {
+  await dbPut('kv', 'authError', msg).catch(() => {});
+  const el = $('authNote');
+  if (el) { el.textContent = 'Last sign-in attempt: ' + msg; el.style.color = 'var(--ochre)'; }
+  toast('Sign-in failed: ' + msg, 'warn');
+  openSettings();
 }
 
 async function token() { return await dbGet('kv', 'token'); }
@@ -2978,6 +3179,12 @@ function paintSettings() {
   $('sHashtags').value = S.hashtags;
   $('sImportTag').checked = !!S.importTag;
   $('sClient').value = S.clientId;
+  dbGet('kv', 'authError').then((m) => {
+    const el = $('authNote');
+    if (!el) return;
+    el.textContent = m ? 'Last sign-in attempt: ' + m : '';
+    el.style.color = 'var(--ochre)';
+  }).catch(() => {});
   $('sApiBase').value = S.apiBase;
   $('sReport').checked = !!S.reportRejects;
   $('sSelfUrl').value = location.href.split('?')[0].split('#')[0];
@@ -3051,6 +3258,11 @@ function bindUI() {
     const [dx, dy] = b.dataset.dir.split(',').map(Number);
     b.onclick = () => nudge(dx * S.driftStep, dy * S.driftStep);
   }
+  $('tagAdd').onclick = () => { tagDraft.push(['', '']); paintTagRows(null); };
+  $('tagCancel').onclick = closeTagEditor;
+  $('tagDone').onclick = commitTags;
+  // Tapping the dimmed backdrop cancels, matching the settings sheet.
+  $('tagSheet').onclick = (e) => { if (e.target === $('tagSheet')) closeTagEditor(); };
   $('gearBtn').onclick = openSettings;
   $('sheetClose').onclick = closeSettings;
   $('sheetSave').onclick = saveSettings;
@@ -3067,7 +3279,14 @@ function bindUI() {
   const NUDGE = { ArrowUp: [0, 1], ArrowDown: [0, -1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] };
   addEventListener('keydown', (e) => {
     if ($('sheet').classList.contains('open')) return;
-    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+    if ($('tagSheet').classList.contains('open')) {
+      if (e.key === 'Escape') closeTagEditor();
+      return;
+    }
+    // TEXTAREA was missing, so typing in the paste box fired verdicts and
+    // nudged the outline — an 'a' in pasted text would accept the candidate.
+    const tn = e.target.tagName;
+    if (tn === 'INPUT' || tn === 'SELECT' || tn === 'TEXTAREA' || e.target.isContentEditable) return;
     const k = e.key;
     if (NUDGE[k]) {
       e.preventDefault();
