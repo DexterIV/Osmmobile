@@ -245,21 +245,86 @@ function parseOsmXml(text) {
   const usedInWay = new Set();
   const out = [];
 
-  for (let i = 0; i < wc; i++) {
+  // Resolve a way index to an open ring, or null.
+  const ringOf = (i) => {
     const n = wN[i];
-    if (n < 4) continue;
+    if (n < 4) return null;
     const ring = [];
     for (let k = 0; k < n; k++) {
       const idx = byId.get(refs[wA[i] + k]);
-      if (idx === undefined) { ring.length = 0; break; }
+      if (idx === undefined) return null;
       usedInWay.add(refs[wA[i] + k]);
       ring.push([nlat[idx], nlon[idx]]);
     }
-    if (ring.length < 4) continue;
     const a = ring[0], z = ring[ring.length - 1];
     if (a[0] === z[0] && a[1] === z[1]) ring.pop();
-    if (ring.length < 3) continue;
-    out.push({ kind: 'building', ring, tags: tagsIn(wtA[i], wtB[i]) });
+    return ring.length >= 3 ? ring : null;
+  };
+
+  // Way id -> way index, needed to resolve relation members. The scanner does
+  // not keep way ids, and teaching it to would mean touching the growth path
+  // that has bitten this project before, so the ids are read from the source in
+  // document order — which is the order the scanner appends them. The count is
+  // checked rather than assumed: on any mismatch relations are skipped entirely,
+  // because a mis-resolved member would silently attach the wrong hole to the
+  // wrong field.
+  const wayIdx = new Map();
+  let wayOrderOk = true;
+  {
+    let i = 0;
+    for (const m of RAW.matchAll(WAY_ID_RE)) {
+      if (i < wc) wayIdx.set(Number(m[1]), i);
+      i++;
+    }
+    if (i !== wc) {
+      wayOrderOk = false;
+      console.warn('way id scan found ' + i + ' ways, wasm found ' + wc + ' — skipping relations');
+    }
+  }
+
+  // Relations, parsed in JS. The wasm scanner only knows nodes and ways, and a
+  // land-cover file holds a handful of relations against thousands of nodes, so
+  // a regex pass costs nothing and beats teaching the scanner a third element.
+  //
+  // This matters more than it looks: without it a forest-island-in-farmland
+  // arrives as two unrelated solid rings, and accepting the farmland uploads it
+  // straight over the forest. That is the exact failure the importer's own notes
+  // warn about, and the parser used to walk into it.
+  const consumedWays = new Set();
+  for (const m of (wayOrderOk ? RAW.matchAll(REL_RE) : [])) {
+    const body = m[0];
+    const tags = tagsIn(m.index, m.index + body.length);
+    if (tags.type !== 'multipolygon') continue;
+    const outers = [], inners = [];
+    for (const mm of body.matchAll(MEMBER_RE)) {
+      if (mm[1] !== 'way') continue;
+      const idx = wayIdx.get(Number(mm[2]));
+      if (idx === undefined) continue;
+      (mm[3] === 'inner' ? inners : outers).push(idx);
+      consumedWays.add(idx);
+    }
+    delete tags.type;
+    // One candidate per outer ring; every inner ring is carried as a hole.
+    // Multiple outers in one relation are rare here, and treating each as its
+    // own reviewable area is more useful than refusing the whole relation.
+    const holes = inners.map(ringOf).filter(Boolean);
+    for (const oi of outers) {
+      const ring = ringOf(oi);
+      if (!ring) continue;
+      out.push({ kind: areaKind(tags), ring, holes, tags: Object.assign({}, tags) });
+    }
+  }
+
+  for (let i = 0; i < wc; i++) {
+    if (consumedWays.has(i)) continue;
+    const tags = tagsIn(wtA[i], wtB[i]);
+    // Untagged closed ways used to become candidates with no tags at all. In a
+    // land-cover file those are the inner rings of a multipolygon, and reviewing
+    // them as objects in their own right is meaningless.
+    if (!Object.keys(tags).length) continue;
+    const ring = ringOf(i);
+    if (!ring) continue;
+    out.push({ kind: areaKind(tags), ring, tags });
   }
 
   for (let i = 0; i < nc; i++) {
@@ -272,6 +337,22 @@ function parseOsmXml(text) {
 
   wasm.release(p);
   return out;
+}
+
+const REL_RE = /<relation\b[\s\S]*?<\/relation>/g;
+const WAY_ID_RE = /<way\s+id="(-?\d+)"/g;
+const MEMBER_RE = /<member\s+type="([^"]*)"\s+ref="(-?\d+)"\s+role="([^"]*)"/g;
+
+// Land cover is reviewed as `area`, not `building`: auto-fit correlates Sobel
+// edges of a building outline against imagery and is meaningless on a field, and
+// dragging the vertices of a 200-point parcel is not a thing anyone wants to do
+// on a phone. Buildings keep their own kind so that path is untouched.
+const AREA_KEYS = ['landuse', 'natural', 'leisure', 'surface', 'crop'];
+
+function areaKind(tags) {
+  if (tags.building) return 'building';
+  for (const k of AREA_KEYS) if (tags[k]) return 'area';
+  return 'building';
 }
 
 const TAG_RE = /<tag\s+k=(["'])(.*?)\1\s+v=(["'])([\s\S]*?)\3\s*\/?>/g;
@@ -1335,9 +1416,14 @@ function drawShape() {
   if (shape) { map.removeLayer(shape); shape = null; }
   vertexGroup.clearLayers();
   if (!c) return;
-  if (c.kind === 'building') {
-    shape = L.polygon(c.ring, {
-      color: '#ff2d95', weight: 2.5, fillColor: '#ff2d95', fillOpacity: 0.12,
+  if (c.kind === 'building' || c.kind === 'area') {
+    // Leaflet takes [outer, ...holes], so a hole is drawn as a hole rather than
+    // being lost or filled in.
+    const rings = [c.ring].concat((c.holes || []).filter((h) => h && h.length >= 3));
+    const area = c.kind === 'area';
+    shape = L.polygon(area ? rings : c.ring, {
+      color: area ? '#a3e635' : '#ff2d95', weight: area ? 2 : 2.5,
+      fillColor: area ? '#a3e635' : '#ff2d95', fillOpacity: area ? 0.08 : 0.12,
       className: 'cand',
     }).addTo(map);
     attachShapeDrag();
@@ -1350,10 +1436,16 @@ function drawShape() {
   }
 }
 
+// Land-cover parcels routinely carry hundreds of vertices and their boundaries
+// are shared with neighbours, conditioned upstream — dropping forty draggable
+// markers on one is both useless and a way to break that shared edge by accident.
+const VERTEX_LIMIT = 80;
+
 function drawVertices() {
   const c = cur();
   vertexGroup.clearLayers();
   if (!c || c.kind !== 'building') return;
+  if (c.ring.length > VERTEX_LIMIT) return;
   if (!$('vertexToggle').classList.contains('on')) return;
   c.ring.forEach((pt, i) => {
     const m = L.marker(pt, {
@@ -1616,6 +1708,11 @@ function ringCentroidSimple(ring) {
 // duplicate, and so is an existing building sitting inside the candidate.
 function overlapVerdict(c, cell) {
   if (!cell || !cell.ways.length) return null;
+  // Land cover legitimately contains buildings — a farmland parcel with a barn in
+  // it is not a duplicate of the barn. Judging areas against building footprints
+  // would flag essentially every field, so it is skipped. Comparing against
+  // existing *land cover* would be the useful check and is not implemented.
+  if (c.kind === 'area') return null;
   for (const w of cell.ways) {
     if (c.kind === 'address') {
       if (pointInRing(c.ring[0], w.ring)) {
@@ -1911,6 +2008,10 @@ function commitTags() {
 async function autoAlign() {
   const c = cur();
   if (!c) return;
+  if (c.kind === 'area') {
+    toast('Auto-fit correlates building edges against imagery — not meaningful for land cover');
+    return;
+  }
   if (c.kind !== 'building') { toast('Auto-fit works on outlines only'); return; }
   const btn = $('autoBtn');
   btn.classList.add('busy');
@@ -2004,6 +2105,8 @@ async function verdict(kind) {
   if (kind === 'accept') {
     await dbPut('queue', c.key, {
       kind: c.kind, ring: c.ring, tags: c.tags, t: Date.now(),
+      // Without holes here an approved forest-island-in-farmland uploads solid.
+      holes: (c.holes || []).filter((h) => h && h.length >= 3),
       moved: !!c.moved, city: c.tags['addr:city'] || '',
     });
   }
@@ -2024,22 +2127,54 @@ async function refreshQueueBadge() {
 function osmChange(items, changesetId) {
   let id = -1;
   const create = [];
+
+  // One node per coordinate for the whole changeset, keyed at OSM's own 7-decimal
+  // limit. Adjacent land-cover parcels are conditioned upstream to share exact
+  // boundary coordinates, and emitting a fresh node per ring would have thrown
+  // that away — leaving duplicate coincident nodes and no shared topology, which
+  // is the gap-versus-overlap problem the importer works hard to avoid. It also
+  // shrinks a farmland changeset considerably.
+  const nodeIds = new Map();
+  const nodeFor = ([la, lo]) => {
+    const key = la.toFixed(7) + ',' + lo.toFixed(7);
+    let nid = nodeIds.get(key);
+    if (nid === undefined) {
+      nid = id--;
+      nodeIds.set(key, nid);
+      create.push(`<node id="${nid}" lat="${la.toFixed(7)}" lon="${lo.toFixed(7)}" changeset="${changesetId}" version="0"/>`);
+    }
+    return nid;
+  };
+  const wayFor = (ring, tagXml) => {
+    const ids = ring.map(nodeFor);
+    const nds = ids.concat([ids[0]]).map((r) => `<nd ref="${r}"/>`).join('');
+    const wid = id--;
+    create.push(`<way id="${wid}" changeset="${changesetId}" version="0">${nds}${tagXml || ''}</way>`);
+    return wid;
+  };
+
   for (const it of items) {
-    const tags = Object.entries(it.tags).filter(([k]) => !S.dropKeys.includes(k))
+    const tagXml = Object.entries(it.tags).filter(([k]) => !S.dropKeys.includes(k))
       .map(([k, v]) => `<tag k="${esc(k)}" v="${esc(v)}"/>`).join('');
     if (it.kind === 'address') {
       const [la, lo] = it.ring[0];
-      create.push(`<node id="${id--}" lat="${la.toFixed(7)}" lon="${lo.toFixed(7)}" changeset="${changesetId}" version="0">${tags}</node>`);
-    } else {
-      const ids = [];
-      for (const [la, lo] of it.ring) {
-        const nid = id--;
-        ids.push(nid);
-        create.push(`<node id="${nid}" lat="${la.toFixed(7)}" lon="${lo.toFixed(7)}" changeset="${changesetId}" version="0"/>`);
-      }
-      const nds = ids.concat([ids[0]]).map((r) => `<nd ref="${r}"/>`).join('');
-      create.push(`<way id="${id--}" changeset="${changesetId}" version="0">${nds}${tags}</way>`);
+      create.push(`<node id="${id--}" lat="${la.toFixed(7)}" lon="${lo.toFixed(7)}" changeset="${changesetId}" version="0">${tagXml}</node>`);
+      continue;
     }
+    const holes = (it.holes || []).filter((h) => h && h.length >= 3);
+    if (!holes.length) {
+      wayFor(it.ring, tagXml);
+      continue;
+    }
+    // Holes present, so the tags belong on a type=multipolygon relation and the
+    // rings stay untagged. Tagging the outer way instead would fill the hole in.
+    const outer = wayFor(it.ring, '');
+    const members = ['<member type="way" ref="' + outer + '" role="outer"/>'];
+    for (const h of holes) {
+      members.push('<member type="way" ref="' + wayFor(h, '') + '" role="inner"/>');
+    }
+    create.push('<relation id="' + (id--) + '" changeset="' + changesetId + '" version="0">' +
+      members.join('') + '<tag k="type" v="multipolygon"/>' + tagXml + '</relation>');
   }
   return `<osmChange version="0.6" generator="orto-review"><create>${create.join('')}</create></osmChange>`;
 }
@@ -2225,6 +2360,14 @@ function queueLabel(it) {
     const hn = t['addr:housenumber'] || '?';
     const st = t['addr:street'] || t['addr:place'] || '';
     return { title: hn + (st ? ' ' + st : ''), what: 'address' };
+  }
+  if (it.kind === 'area') {
+    const key = AREA_KEYS.find((k) => t[k]) || 'landuse';
+    const holes = (it.holes || []).length;
+    return {
+      title: key + '=' + t[key] + (holes ? '  (' + holes + ' hole' + (holes > 1 ? 's' : '') + ')' : ''),
+      what: 'area',
+    };
   }
   return { title: 'building=' + (t.building || 'yes'), what: 'building' };
 }

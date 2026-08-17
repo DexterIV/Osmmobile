@@ -388,6 +388,53 @@ It sits in `#padTools`, not in the verdict bar. The bar's three buttons are musc
 carry swipe handlers, so a fourth button there would both shift them and risk a swipe navigating away
 mid-review.
 
+## Land cover — foundations (buildings path untouched)
+
+Planned split, per the owner: the **vibe-osm-importer** (private, `DexterIV/vibe-osm-importer`) keeps
+doing the geometry — fetch, clip against fresh Overpass, `repair_overlaps_exact`, holes, sliver
+filter — and runs as a small server on the laptop; the phone reviews area by area. **Land cover and
+buildings must stay independent**, so that with no server reachable the building review still works
+in full. Buildings come from vector tiles and need nothing from the importer.
+
+Why the app does not fetch those sources itself, measured 2026-08-18:
+
+- **BDOT10k opendata** `1003_GML.zip` is **33.4 MB per powiat** and sends **no
+  `Access-Control-Allow-Origin`**. Unfetchable from a browser regardless of size.
+- **ARiMR WFS** (`geoportal-w2.arimr.gov.pl/geoserver/gsa_public/uprawy_2025/wfs`) sits behind a WAF
+  that rejected every request from this environment — including with the importer's own
+  `python-requests` User-Agent — answering with a malformed `HTTP/1.1 0` status line and a *Request
+  Rejected* page. Its CORS headers could not be observed. GeoServer sends none by default.
+
+### What was wrong for land cover, and is now fixed
+
+1. **Relations were ignored entirely.** The scanner reads nodes and ways only, so the importer's
+   `type=multipolygon` output arrived as two unrelated solid rings and accepting the farmland would
+   have uploaded it over the forest — gotcha #1 in the importer's own notes, reintroduced here.
+   Relations are now parsed in JS (a land-cover file has a handful against thousands of nodes, so a
+   regex pass is cheaper than teaching the AssemblyScript scanner a third element type). Way ids come
+   from the source in document order, which is the order the scanner appends them; **the count is
+   checked and relations are skipped wholesale on any mismatch**, because a mis-resolved member would
+   attach the wrong hole to the wrong field.
+2. **Upload discarded shared topology.** `write_landuse_osm_file` deduplicates nodes by rounded
+   coordinate so neighbours share boundary nodes; `osmChange` emitted a fresh node per ring. It now
+   dedupes across the whole changeset at OSM's 7-decimal limit — two adjacent squares give six nodes,
+   not eight — and emits holes as a `type=multipolygon` with **untagged** rings, since tagging the
+   outer way fills the hole back in.
+3. **Untagged closed ways became candidates.** In a land-cover file those are the inner rings.
+4. **Review UI assumed buildings.** Land cover is `kind: 'area'`: drawn in green with its holes,
+   auto-fit refuses it (Sobel edge correlation against a building outline means nothing on a field),
+   vertex handles are suppressed above 80 points, and `overlapVerdict` skips areas — a farmland parcel
+   containing a barn is not a duplicate of the barn, and judging areas against footprints would flag
+   every field. Comparing against existing *land cover* would be the useful check and is not written.
+
+### Still to do
+
+- The importer-side server and the app-side fetch, with per-class enable/disable in settings.
+- **Mixed content is the open blocker.** The app is HTTPS on GitHub Pages; a browser will refuse
+  `http://<laptop-ip>:port`. Either tunnel the server to an HTTPS URL, install a locally-trusted cert,
+  or serve the app from the laptop as well and lose PKCE sign-in with it (`crypto.subtle` is absent on
+  an insecure origin, and `http://localhost` being secure does not help a phone).
+
 ## Nothing is sent without being read first
 
 The up-arrow opens the **queue review sheet**; it does not upload. Previously a single tap on it
