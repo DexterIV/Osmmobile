@@ -119,8 +119,10 @@ path.cand{filter:drop-shadow(0 0 4px rgba(255,45,149,.5))}
 #start.sandboxed .startNote{color:#f6d99a}
 .startRow button:disabled{opacity:.35;border-color:var(--line);color:var(--dim);background:var(--panel2)}
 .startMore p{margin:0;color:var(--dim);font-size:10.5px;line-height:1.5;font-family:var(--mono)}
+/* color was --ink here, i.e. near-black text on a near-black panel — pasted
+   data was effectively invisible. */
 #pasteBox{width:100%;box-sizing:border-box;height:54px;resize:vertical;background:var(--panel2);
-  color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:7px 8px;
+  color:var(--text);border:1px solid var(--line);border-radius:6px;padding:7px 8px;
   font-family:var(--mono);font-size:10.5px}
 #pasteBox:focus{outline:none;border-color:var(--plot)}
 /* House numbers of addresses already in OSM, drawn beside the cyan dot so a
@@ -139,6 +141,30 @@ path.cand{filter:drop-shadow(0 0 4px rgba(255,45,149,.5))}
   opacity:0;pointer-events:none;transform:translateY(8px);transition:.18s}
 #toast.show{opacity:1;transform:none}
 #toast.warn{border-left-color:var(--ochre);color:#f6d99a}
+
+/* Upload review. Deliberately its own sheet rather than a confirm dialog: the
+   point is to read the list before anything reaches OSM. */
+#queueSheet{position:absolute;inset:0;z-index:830;background:rgba(6,9,12,.6);display:none}
+#queueSheet.open{display:block}
+#queueSheetBody{position:absolute;left:0;right:0;bottom:0;max-height:92%;overflow-y:auto;
+  background:var(--panel);border-top:1px solid var(--line);border-radius:14px 14px 0 0;padding:16px}
+#queueSheetBody h3{margin:0 0 4px;font-size:13px;letter-spacing:.02em}
+#csPreview{font-family:var(--mono);font-size:10px;line-height:1.6;color:var(--dim);
+  background:var(--ink);border:1px solid var(--line);border-radius:6px;padding:9px;
+  margin:0 0 12px;white-space:pre-wrap;word-break:break-all}
+.qRow{display:grid;grid-template-columns:1fr 34px;gap:8px;align-items:center;
+  border-bottom:1px solid var(--line);padding:8px 0}
+.qRow:last-of-type{border-bottom:none}
+.qMain{min-width:0}
+.qTitle{font-family:var(--mono);font-size:11.5px;color:var(--text)}
+.qTitle .k{color:var(--ctx)}
+.qSub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-top:3px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.qMoved{color:var(--ochre)}
+.qRow button{border:1px solid var(--line);background:var(--panel2);color:var(--strike);
+  border-radius:6px;font-size:15px;line-height:1;height:34px}
+#queueUpload{border-color:#1d4f3e;color:var(--verify);background:#0f1c17}
+#queueUpload:disabled{color:var(--dim);border-color:var(--line);background:var(--panel2)}
 
 /* Tag editor. Same shape as the settings sheet but its own overlay, so opening
    it from a chip does not disturb settings state. z-index above #sheet so it can
@@ -264,6 +290,21 @@ input,select{width:100%;background:var(--ink);border:1px solid var(--line);color
 
 <input type="file" id="file" accept=".osm,.xml,.json,.geojson" style="display:none">
 
+<div id="queueSheet">
+  <div id="queueSheetBody">
+    <h3>Ready to upload</h3>
+    <p class="hint">Nothing has been sent yet. Check the list, drop anything you are unsure of, then
+      upload. Dropping an item here also forgets its accept, so it comes back next time you load
+      that area.</p>
+    <p id="csPreview"></p>
+    <div id="queueList"></div>
+    <div class="sheetActions">
+      <button id="queueClose">Close</button>
+      <button id="queueUpload">Upload</button>
+    </div>
+  </div>
+</div>
+
 <div id="tagSheet">
   <div id="tagSheetBody">
     <h3>Tags</h3>
@@ -326,8 +367,8 @@ input,select{width:100%;background:var(--ink);border:1px solid var(--line);color
       <div><label>Objects per changeset</label><input id="sBatch" type="number" min="1" max="500"></div>
     </div>
 
-    <label>Changeset hashtags</label>
-    <input id="sHashtags" placeholder="#orto-review">
+    <label>Source repository (changeset <code>repo</code> tag)</label>
+    <input id="sRepo" placeholder="https://github.com/DexterIV/Osmmobile">
     <label style="display:flex;align-items:center;gap:9px;text-transform:none;letter-spacing:0;font-size:12px;font-family:var(--sans);color:var(--text)">
       <input type="checkbox" id="sImportTag" style="width:auto;flex:0 0 auto">
       Also tag changesets <b>import=yes</b>

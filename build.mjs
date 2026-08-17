@@ -1,3 +1,15 @@
+// Orto Review — review BDOT10k buildings and PRG addresses against the GUGiK
+// orthophoto, one object at a time, and upload the good ones to OpenStreetMap.
+// Copyright (C) 2026 DexterIV
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, either version 3 of the License, or (at your option) any later
+// version. It is distributed WITHOUT ANY WARRANTY; see the GNU General Public
+// License for more details: https://www.gnu.org/licenses/
+//
+// Source: https://github.com/DexterIV/Osmmobile
+
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';

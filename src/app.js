@@ -1,3 +1,15 @@
+// Orto Review — review BDOT10k buildings and PRG addresses against the GUGiK
+// orthophoto, one object at a time, and upload the good ones to OpenStreetMap.
+// Copyright (C) 2026 DexterIV
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, either version 3 of the License, or (at your option) any later
+// version. It is distributed WITHOUT ANY WARRANTY; see the GNU General Public
+// License for more details: https://www.gnu.org/licenses/
+//
+// Source: https://github.com/DexterIV/Osmmobile
+
 const R = 6378137;
 const DEF = {
   apiBase: 'https://budynki.openstreetmap.org.pl',
@@ -14,7 +26,8 @@ const DEF = {
   batchSize: 100,
   comment: 'Buildings and addresses from BDOT10k/PRG',
   source: 'BDOT10k;PRG',
-  hashtags: '#orto-review',
+  // Points at the source rather than a hashtag that says nothing.
+  repo: 'https://github.com/DexterIV/Osmmobile',
   importTag: false,
   clientId: '',
   maxShift: 8,
@@ -2075,11 +2088,97 @@ async function paintUser() {
   $('userBtn').className = t ? 'ok' : '';
 }
 
+// The tags every changeset carries. Built as pairs so the review sheet can show
+// exactly what will be sent instead of describing it.
+//
+// There is no `hashtags` tag. It read `#orto-review`, which tells a reviewer
+// nothing they cannot see from `created_by`, and hashtags are for campaigns that
+// someone is actually coordinating. `host` and `repo` replace it: `host` is what
+// iD and Rapid use for the editor's address, and `repo` points at the source so
+// anyone querying an edit can read the code that made it.
+function csTags(count, city) {
+  const t = [
+    ['created_by', 'orto-review'],
+    ['comment', S.comment + ' — ' + city],
+    ['source', S.source],
+    ['host', location.href.split('?')[0].split('#')[0]],
+  ];
+  if (S.repo) t.push(['repo', S.repo]);
+  if (S.importTag) t.push(['import', 'yes']);
+  t.push(['review_count', String(count)]);
+  return t;
+}
+
+// ---- Review before sending -------------------------------------------------
+// The up-arrow used to upload immediately. Nothing between an accidental tap and
+// a live changeset, and no way to see what had accumulated across sessions.
+
+function queueLabel(it) {
+  const t = it.tags || {};
+  if (it.kind === 'address') {
+    const hn = t['addr:housenumber'] || '?';
+    const st = t['addr:street'] || t['addr:place'] || '';
+    return { title: hn + (st ? ' ' + st : ''), what: 'address' };
+  }
+  return { title: 'building=' + (t.building || 'yes'), what: 'building' };
+}
+
+function changesetPreview(count, city) {
+  return csTags(count, city).map(([k, v]) => k + ' = ' + v).join('\n');
+}
+
+async function openQueueSheet() {
+  const rows = (await dbAll('queue')).map((e) => Object.assign({ key: e.key }, e.val));
+  rows.sort((a, b) => (a.city || '').localeCompare(b.city || '') || (a.t || 0) - (b.t || 0));
+  const box = $('queueList');
+  box.innerHTML = '';
+  if (!rows.length) {
+    box.innerHTML = '<p class="hint">Nothing queued.</p>';
+  }
+  for (const it of rows) {
+    const { title, what } = queueLabel(it);
+    const row = document.createElement('div');
+    row.className = 'qRow';
+    const main = document.createElement('div');
+    main.className = 'qMain';
+    const tags = Object.entries(it.tags || {})
+      .filter(([k]) => !S.dropKeys.includes(k))
+      .map(([k, v]) => k + '=' + v).join('  ');
+    main.innerHTML = '<div class="qTitle"><span class="k">' + esc(what) + '</span> ' + esc(title) +
+      (it.moved ? ' <span class="qMoved">· nudged</span>' : '') + '</div>' +
+      '<div class="qSub">' + esc(it.city || 'no city') + ' · ' + esc(tags || 'no tags') + '</div>';
+    const del = document.createElement('button');
+    del.textContent = '×';
+    del.title = 'Drop from the upload';
+    del.onclick = async () => {
+      await dbDel('queue', it.key);
+      // Forget the accept too, or the object is silently dropped for good: it
+      // would be filtered out of every future load as "already decided".
+      await dbDel('decisions', it.key);
+      await refreshQueueBadge();
+      openQueueSheet();
+    };
+    row.appendChild(main);
+    row.appendChild(del);
+    box.appendChild(row);
+  }
+  const city = rows.length ? (rows[0].city || 'Poland') : 'Poland';
+  $('csPreview').textContent = rows.length
+    ? 'First changeset would carry:\n' + changesetPreview(Math.min(rows.length, S.batchSize), city)
+    : '';
+  $('queueUpload').textContent = rows.length ? 'Upload ' + rows.length : 'Upload';
+  $('queueUpload').disabled = !rows.length;
+  $('queueSheet').classList.add('open');
+}
+
+function closeQueueSheet() { $('queueSheet').classList.remove('open'); }
+
 async function uploadQueue() {
   const t = await token();
   if (!t) { toast('Sign in first', 'warn'); return; }
   const all = (await dbAll('queue')).map((e) => Object.assign({ key: e.key }, e.val));
   if (!all.length) return;
+  closeQueueSheet();
   all.sort((a, b) => (a.city || '').localeCompare(b.city || '') || a.ring[0][0] - b.ring[0][0]);
   const H = { Authorization: 'Bearer ' + t, 'Content-Type': 'text/xml' };
   let done = 0;
@@ -2087,15 +2186,9 @@ async function uploadQueue() {
   for (let i = 0; i < all.length; i += S.batchSize) {
     const batch = all.slice(i, i + S.batchSize);
     const city = batch[0].city || 'Poland';
-    const extra = (S.hashtags ? `<tag k="hashtags" v="${esc(S.hashtags)}"/>` : '') +
-      (S.importTag ? '<tag k="import" v="yes"/>' : '') +
-      `<tag k="review_count" v="${batch.length}"/>`;
-    const cs = `<osm><changeset>
-      <tag k="created_by" v="orto-review"/>
-      <tag k="comment" v="${esc(S.comment + ' — ' + city)}"/>
-      <tag k="source" v="${esc(S.source)}"/>
-      ${extra}
-    </changeset></osm>`;
+    const cs = '<osm><changeset>' +
+      csTags(batch.length, city).map(([k, v]) => `<tag k="${esc(k)}" v="${esc(v)}"/>`).join('') +
+      '</changeset></osm>';
     try {
       let r = await fetch(API + '/changeset/create', { method: 'PUT', headers: H, body: cs });
       if (!r.ok) throw new Error('changeset ' + r.status + ' ' + (await r.text()).slice(0, 120));
@@ -2135,7 +2228,7 @@ function paintSettings() {
   $('sBatch').value = S.batchSize;
   $('sComment').value = S.comment;
   $('sSource').value = S.source;
-  $('sHashtags').value = S.hashtags;
+  $('sRepo').value = S.repo;
   $('sImportTag').checked = !!S.importTag;
   $('sClient').value = S.clientId;
   dbGet('kv', 'authError').then((m) => {
@@ -2163,7 +2256,7 @@ async function saveSettings() {
   S.batchSize = Math.max(1, Math.min(500, +$('sBatch').value || DEF.batchSize));
   S.comment = $('sComment').value;
   S.source = $('sSource').value;
-  S.hashtags = $('sHashtags').value.trim();
+  S.repo = $('sRepo').value.trim();
   S.importTag = $('sImportTag').checked;
   S.clientId = $('sClient').value.trim();
   S.apiBase = $('sApiBase').value.trim() || DEF.apiBase;
@@ -2226,7 +2319,10 @@ function bindUI() {
   $('sheetClose').onclick = closeSettings;
   $('sheetSave').onclick = saveSettings;
   $('userBtn').onclick = login;
-  $('uploadBtn').onclick = uploadQueue;
+  $('uploadBtn').onclick = openQueueSheet;
+  $('queueClose').onclick = closeQueueSheet;
+  $('queueUpload').onclick = uploadQueue;
+  $('queueSheet').onclick = (e) => { if (e.target === $('queueSheet')) closeQueueSheet(); };
   $('clearTiles').onclick = async () => {
     await dbClear('tiles'); await dbClear('ctx'); paintSettings(); toast('Cache cleared');
   };

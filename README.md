@@ -1,203 +1,128 @@
-# Orto Review — install
+# Orto Review
 
-Couch-side review of BDOT10k buildings and PRG addresses against the orthophoto.
+Review [BDOT10k](https://www.geoportal.gov.pl/) building outlines and PRG address points against the
+GUGiK orthophoto, one object at a time, on a phone — then upload the good ones to OpenStreetMap as
+ordinary changesets.
 
-## Build from source
+**Live: <https://dexteriv.github.io/Osmmobile/>** · Source: <https://github.com/DexterIV/Osmmobile>
+
+The whole application is one file. `index.html` has Leaflet and a WebAssembly core inlined; there is
+no bundler, no framework and no runtime dependency. Copy that single file to any HTTPS origin and it
+works.
+
+## What it does
+
+- Shows one candidate at a time over the orthophoto, with **what is already in OpenStreetMap** drawn
+  underneath: existing building footprints as dashed cyan outlines, existing address points with
+  their house numbers. Overlap is judged from real geometry, so a candidate sitting inside a building
+  that is already mapped is flagged instead of being called *clear*.
+- **Accept / Reject / Later** per object, with the verdict stored against the upstream object id, so
+  a decision sticks even if you meet the object again from a different download.
+- Nudge the outline with a drift pad, drag individual vertices, or **auto-fit** by cross-correlating
+  Sobel edges of the outline against the orthophoto pixels.
+- **Edit tags** before accepting: add, change or remove any key, with one-tap presets for the keys
+  these datasets usually need.
+- **Review the whole queue before anything is sent**, including the exact changeset tags, and drop
+  individual objects from it.
+- Works offline once loaded: an IndexedDB tile cache, and everything persistent lives in IndexedDB
+  rather than `localStorage`.
+
+## Keys
+
+`A` accept · `R` reject · `L` later · `G` auto-fit · `Z` undo · `V` toggle vertices · arrows nudge.
+
+## Build
+
+Requires Node and npm.
 
 ```bash
 npm install
-npm run build      # compiles src/core.ts to wasm, inlines everything into index.html
+npm run build      # asc src/core.ts -> core.wasm, then inlines Leaflet + wasm into index.html
+npm test           # wasm kernels, retry logic, .osm parsing, vector tiles, OSM context, tag editing
 npm run serve      # http://localhost:8080
 ```
 
-Layout:
+| path | role |
+|---|---|
+| `src/core.ts` | AssemblyScript: `.osm` byte scanner, uniform grid index, Sobel, drift cross-correlation |
+| `src/app.js` | all application logic |
+| `src/shell.html` | markup and CSS |
+| `src/sw.js` | service worker source; `__BUILD_ID__` is stamped in at build time |
+| `build.mjs` | compiles the wasm, inlines everything, validates the output |
+| `index.html`, `sw.js` | **generated**, committed because GitHub Pages serves them |
 
-```
-src/core.ts                AssemblyScript kernels: .osm scanner, grid index, Sobel, drift correlation
-src/app.js                 application logic
-src/shell.html             markup and styles
-build.mjs                  compiles the wasm and inlines Leaflet + wasm into index.html
-index.html                 built artifact, committed so Pages can serve it
-setup.sh                   WSL bootstrap: deps, gh auth, build, push, enable Pages, serve
-```
+`index.html` and `sw.js` are build artefacts. Edit `src/` and rebuild; never edit them directly.
 
-`index.html` is generated. Edit the files in `src/` and re-run `npm run build`.
+The build refuses to produce output if any `$('someId')` in `src/app.js` has no matching `id=` in the
+markup, if a bundled script fails to parse, or if `src/sw.js` has lost its `__BUILD_ID__` placeholder.
+Each of those shipped as a bug once.
 
-## The minimum you need is one file
+## Data
 
-`index.html` is the entire app — Leaflet and the WASM core are inlined. Upload just that and it
-works. The other files only add the standalone launcher and offline shell:
+Candidates come from [gugik2osm](https://github.com/openstreetmap-polska/gugik2osm) at
+`budynki.openstreetmap.org.pl`, and existing OSM data for comparison comes from the OpenStreetMap
+API.
 
-```
-index.html                 the app, complete and self-contained
-manifest.webmanifest       optional - launches without browser chrome
-sw.js                      optional - opens with no network
-icon-192.png               optional
-icon-512.png               optional
-icon-maskable-512.png      optional
-deploy.sh                  optional - publish from a computer
-```
+There is an important constraint. That server's `Access-Control-Allow-Origin` header is sent **twice**
+on `/sc/*` and **not at all** on `/josm_data`, and a browser rejects both cases — so those endpoints
+cannot be read from a web app at all, whoever hosts it. Consequently:
 
-It has to be served over HTTPS. Not because of the app, but because Chrome restricts IndexedDB on
-`file://` (that is your tile and decision cache) and OAuth 2 PKCE needs a registered redirect URI.
+- Buildings are read from the **vector tiles** (`/tiles/{z}/{x}/{y}.pbf`), which send the header once.
+  Their geometry is quantised to the tile grid, about 37 cm at the deepest zoom served, and the app
+  says so on every load.
+- **Addresses are not in those tiles**, so they arrive by file: *Get this area's data* opens the
+  server's own export in a new tab — a plain navigation, which CORS does not restrict — and you paste
+  it back or open the saved file.
+- *Take me somewhere* uses the clustered tiles rather than the upstream `/random/` endpoint, which
+  returns 500.
 
----
+`CLAUDE.md` records the measurements behind all of that, including how to re-check it if the upstream
+headers are fixed.
 
-## Option A - from the phone, no terminal
+## Uploading
 
-The whole flow in mobile Chrome.
+OAuth 2 with PKCE. Register an application at
+<https://www.openstreetmap.org/oauth2/applications/new>:
 
-1. Download `index.html` to your phone.
-2. Go to `github.com/new`. Name it `Osmmobile`, public, **no** README. Create.
-3. On the empty repo page tap **uploading an existing file**. Pick `index.html` from Downloads.
-   Commit. (If the repo already has a commit, that shortcut is gone - use **Add file** ->
-   **Upload files** instead.)
-4. Repo -> **Settings** -> **Pages** -> Source: *Deploy from a branch* -> branch `main`, folder
-   `/ (root)` -> Save. Chrome's menu -> *Desktop site* makes Settings easier to navigate.
-5. Wait a minute or two, then open:
+- Redirect URI: this page's exact URL, e.g. `https://dexteriv.github.io/Osmmobile/` — the settings
+  sheet shows it in a tappable field, so copy it from there.
+- Scopes: `read_prefs` and `write_api`.
+- **Leave "Confidential application?" unticked.** A browser holds no client secret, and a confidential
+  registration makes the token exchange fail with `401 invalid_client`.
 
-   ```
-   https://dexteriv.github.io/Osmmobile/
-   ```
-
-To add the PWA extras later, upload the other files into the same repo the same way. Include the
-empty `.nojekyll` file - it turns off Jekyll processing, which this site does not need and which
-only slows the build down.
-
-## Option B - from a computer
-
-```bash
-./deploy.sh
-```
-
-Creates `DexterIV/Osmmobile` public, pushes, enables Pages. Re-run to publish updates. `gh` is
-pinned to `github.com` explicitly so it cannot pick up any other configured host.
-
-## Option C - Netlify Drop
-
-`app.netlify.com/drop` gives an instant HTTPS site with no repo. Tap the dropzone and select the
-file. Claim the site afterwards or the URL is temporary, and rename it to something stable - the
-URL becomes your OAuth redirect URI, so it must not change.
-
-**This may be awkward from mobile Chrome; the dropzone is built for desktop drag-and-drop.** If it
-does not cooperate, use Option A.
-
-## Option D - no hosting at all
-
-`http://localhost` counts as a secure context, so a local server works and stays fully offline.
-
-1. Termux from F-Droid - the Play Store build is abandoned.
-2. `pkg install python`
-3. `cd ~/storage/shared/orto && python -m http.server 8080`
-4. Open `http://localhost:8080/`
-
-Termux must stay running. The service worker will not register over plain `http`, so no standalone
-launcher, but IndexedDB caching works fine. **Whether openstreetmap.org accepts an
-`http://localhost:8080/` redirect URI is untested - most providers allow localhost, but if it is
-rejected you can review and queue, just not upload.**
-
----
-
-## Register the OAuth application
-
-openstreetmap.org -> **My Settings** -> **OAuth 2 applications** -> *Register new application*.
-
-- Redirect URI, exactly, lowercase, trailing slash:
-
-  ```
-  https://dexteriv.github.io/Osmmobile/
-  ```
-
-  Not `DexterIV.github.io` - browsers normalise hostnames, so that will not match. The path stays
-  case-sensitive and must match the repo name, capital O included.
-
-- Permissions: `read_prefs` and `write_api`.
-- Tick the public client / PKCE option. Never paste a client secret anywhere.
-
-The app shows its own URL in the settings sheet - tap the field to select it and copy from there
-rather than typing it.
-
-Client ID goes in: gear -> *OSM OAuth 2 client ID* -> Save -> `sign in`.
-
-## Install to the home screen
-
-Chrome -> menu -> **Add to Home screen**. With the manifest present it launches without browser
-chrome; without it you get a shortcut that opens a tab.
-
-Sign in **once in a normal browser tab before installing**. Same origin means the installed app
-reads the same IndexedDB, so the token is already there. This dodges the flakiest part of PWA
-OAuth, where the authorize redirect leaves the app's scope and Chrome hands it to a Custom Tab.
-
-## First run
-
-No downloading, no file picking. The app talks to budynki.openstreetmap.org.pl directly - every
-endpoint there sends `Access-Control-Allow-Origin: *`.
-
-1. **Take me somewhere** jumps to a spot with lots waiting (`GET /random/`, which the server
-   weights 95% toward high-count areas).
-2. Or pan the map and hit **Load this area**. Needs zoom 12 or closer.
-3. Review. `Accept` only queues - nothing leaves the phone until you press the up arrow.
-
-Candidates come from `/sc/proposed_buildings` and `/sc/proposed_addresses` as GeoJSON, each feature
-carrying its upstream `lokalnyid`. That id is what the decision store keys on, so a reject sticks
-to the actual object rather than to a coordinate hash.
-
-Opening a downloaded `.osm` package still works - it is behind the `...` button.
-
-### Reporting rejects upstream
-
-Off by default. Enabled, a reject POSTs the id to `/sc/proposed_{buildings,addresses}/report`,
-which drops the object from everyone's candidate list. Use it for things that should never be
-imported - a building demolished years ago, an address on an empty field. Do **not** use it for
-"cannot tell from this imagery"; press **Later** instead.
-
-### Imagery
-
-Default is `budynki.openstreetmap.org.pl/orto`, their own reverse proxy in front of the GUGiK ORTO
-WMS, which adds CORS headers. That is what makes Auto-fit and the tile cache work at all - reading
-pixels needs `fetch`, and `fetch` needs CORS. `LAYERS=Raster` is confirmed from their `map.js`, not
-a guess any more. The direct GUGiK endpoints are still selectable if you want to compare.
-
-Keys, if you dock a keyboard: `A` accept, `R` reject, `L` later, `G` auto-fit, `Z` undo,
-`V` vertices, arrow keys nudge.
-
-## Changeset tagging
-
-Defaults, assuming one decision per object:
+Each changeset carries:
 
 ```
 created_by=orto-review
-comment=<your comment> - <locality>
+comment=<your comment> — <locality>
 source=BDOT10k;PRG
-hashtags=#orto-review
-review_count=<objects in the changeset>
+host=<the app URL>
+repo=https://github.com/DexterIV/Osmmobile
+review_count=<objects in this changeset>
 ```
 
-`import=yes` is **off** by default. Because every candidate is looked at against imagery, these are
-not automated edits and should not be labelled as such - mislabelling invites reverts that are not
-warranted. `hashtags` is what OSMCha and the Tasking Manager index on, so the work stays findable
-and auditable without the wrong label. The toggle is in settings if you ever switch to unreviewed
-bulk upload.
+`import=yes` is **off by default and should stay off**. Every candidate is inspected against imagery,
+so these are not automated edits, and labelling them as such invites reverts.
 
-Reviewing each object does not make this *not an import* in the wiki's sense - the geometry still
-comes from BDOT10k, so the Import Guidelines still apply. It just is not a *mechanical* edit.
-Announce yourself in the Polska category on community.openstreetmap.org, use a separate account,
-and keep changesets to one locality.
+Reviewing each object does **not** make this "not an import" in the wiki's sense: the geometry still
+originates from BDOT10k, so the [Import Guidelines](https://wiki.openstreetmap.org/wiki/Import/Guidelines)
+still apply. Announce it in the Polska category on community.openstreetmap.org, use a separate
+account, and keep one locality per changeset.
 
-## Troubleshooting
+Reporting rejects upstream is **off by default** and is destructive for other mappers — it removes the
+object for everyone. Use it only for things that should never be imported, not for "I cannot tell from
+this imagery", which is what *Later* is for.
 
-**Imagery blank.** Switch imagery to one of the direct GUGiK options, or check that the proxy at
-`budynki.openstreetmap.org.pl/orto` is up.
+## Licence
 
-**Auto-fit greyed out.** Means pixel reads were blocked. Should not happen on the default proxy
-source; it will happen on the direct GUGiK endpoints if they omit CORS headers. Switch back to the
-proxy. The drift pad works either way.
+GPL-3.0-or-later. See [LICENSE](LICENSE).
 
-**Fetch failed / 4xx on load.** The area may be too large - zoom to 12 or closer. Server caps
-results at 50000 objects per layer.
+Bundled third-party code, both GPL-compatible:
 
-**"Low confidence" on auto-fit.** Deliberate - it will not move anything below z=1.6. Tree cover
-and fresh snow defeat edge matching. Nudge by hand.
+- [Leaflet](https://leafletjs.com/) 1.9.4, BSD-2-Clause — inlined into `index.html`, its copyright
+  banner preserved.
+- The WebAssembly core is compiled from `src/core.ts` by
+  [AssemblyScript](https://www.assemblyscript.org/) (Apache-2.0), a build-time dependency only.
 
-**Upload returns 409.** Someone edited the area while the package sat in your queue. Re-download
-it; already-decided candidates are skipped.
+Map data © OpenStreetMap contributors, [ODbL](https://www.openstreetmap.org/copyright). Orthophoto and
+BDOT10k/PRG data from GUGiK.

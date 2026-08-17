@@ -13,5 +13,11 @@
   "devDependencies": {
     "assemblyscript": "^0.28.20",
     "leaflet": "1.9.4"
-  }
+  },
+  "license": "GPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DexterIV/Osmmobile.git"
+  },
+  "homepage": "https://dexteriv.github.io/Osmmobile/"
 }

@@ -44,6 +44,7 @@ That check exists because a missing id previously shipped as a runtime crash.
 | `test/parse.test.mjs` | the wasm `.osm` scanner, against a real captured `/josm_data` response |
 | `test/fixtures/` | live captures: a `/josm_data` export, z14 buildings and z6 cluster tiles, an OSM `/map` cell |
 | `setup.sh` | WSL bootstrap: deps, gh auth, build, push, enable Pages, serve |
+| `LICENSE` | GPL-3.0, verbatim from gnu.org — do not retype it |
 
 ## Data source — verified by reading gugik2osm's source
 
@@ -306,22 +307,40 @@ not, so the two requests could disagree about `redirect_uri` and earn a spurious
 The PKCE verifier lives in `sessionStorage`, which is per-tab: finishing the flow in a different tab
 loses it. That case used to return silently and now says so.
 
-Changeset tags:
+Changeset tags, built by `csTags()` as key/value pairs so the review sheet can display exactly what
+will be sent rather than paraphrasing it:
 
 ```
 created_by=orto-review
 comment=<comment> — <locality>
 source=BDOT10k;PRG
-hashtags=#orto-review
+host=<the app URL it ran from>
+repo=https://github.com/DexterIV/Osmmobile   (settings-configurable)
 review_count=<objects in this changeset>
 ```
 
+**There is deliberately no `hashtags` tag.** It used to read `#orto-review`, which says nothing a
+reviewer cannot already see from `created_by`, and a hashtag implies a coordinated campaign that
+nobody is running. `host` replaces it — the key iD and Rapid use for the editor's address — together
+with `repo`, so anyone looking at an edit can go and read the code that made it. If a real campaign
+ever exists, add `hashtags` back then, with the campaign's actual tag.
+
 `import=yes` is **off by default and should stay off.** Every candidate is inspected against
 imagery, so these are not automated edits and labelling them as such invites unwarranted reverts.
-`hashtags` is what OSMCha and the Tasking Manager index on. Reviewing each object does **not** make
-this "not an import" in the wiki's sense — the geometry still originates from BDOT10k, so the Import
-Guidelines still apply: announce in the Polska category on community.openstreetmap.org, use a
-separate account, one locality per changeset.
+Reviewing each object does **not** make this "not an import" in the wiki's sense — the geometry still
+originates from BDOT10k, so the Import Guidelines still apply: announce in the Polska category on
+community.openstreetmap.org, use a separate account, one locality per changeset.
+
+## Nothing is sent without being read first
+
+The up-arrow opens the **queue review sheet**; it does not upload. Previously a single tap on it
+started a live changeset, with nothing in between and no way to see what had accumulated across
+sessions. The sheet lists every queued object with its kind, locality, tags and whether it was
+nudged, shows the exact changeset tags for the first batch, and only then offers Upload.
+
+Dropping an object from that list deletes its `queue` entry **and** its `decisions` entry. Deleting
+only the queue entry would lose the object permanently — it would be filtered out of every future
+load as "already decided" while never having been uploaded.
 
 Upstream reject reporting is **off by default** and destructive for other mappers. It is for objects
 that should never be imported, not for "can't tell from this imagery" — that is what **Later** is
@@ -430,3 +449,13 @@ but that was never measured.** Do not describe the wasm as a large speedup.
   than creating one.
 - `streets` is an available upstream layer and is not used at all.
 - `/lod1/not_in/osm/` exists upstream and could supply building heights.
+
+## Licence
+
+GPL-3.0-or-later. `LICENSE` is the canonical text fetched from gnu.org, not transcribed. Each source
+file carries a short notice, which for `src/app.js` and `src/sw.js` means the notice is inlined into
+the distributed `index.html` and `sw.js` too.
+
+Bundled Leaflet is BSD-2-Clause and GPL-compatible; `build.mjs` strips only its sourcemap comment, so
+its `@preserve` copyright banner survives into `index.html`. Verify that after touching the inlining
+step — removing it would be a licence violation, not just impolite.

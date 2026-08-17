@@ -1,10 +1,22 @@
-// Generated to ./sw.js by build.mjs, which substitutes 6792835e31cc with a
+// Orto Review — review BDOT10k buildings and PRG addresses against the GUGiK
+// orthophoto, one object at a time, and upload the good ones to OpenStreetMap.
+// Copyright (C) 2026 DexterIV
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, either version 3 of the License, or (at your option) any later
+// version. It is distributed WITHOUT ANY WARRANTY; see the GNU General Public
+// License for more details: https://www.gnu.org/licenses/
+//
+// Source: https://github.com/DexterIV/Osmmobile
+
+// Generated to ./sw.js by build.mjs, which substitutes 811535f6e3d0 with a
 // hash of the built index.html. That substitution is the whole point: a
 // browser only looks for an updated service worker when sw.js itself changes
 // byte for byte. With a fixed cache name and a fixed body, an installed copy
 // served its first cached index.html forever and no later deploy could ever
 // reach the device.
-const VERSION = '6792835e31cc';
+const VERSION = '811535f6e3d0';
 const CACHE = 'orto-review-' + VERSION;
 const SHELL = [
   './', './index.html', './manifest.webmanifest',
