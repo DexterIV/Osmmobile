@@ -583,8 +583,7 @@ async function diagnose() {
 }
 
 async function fetchArea(bounds) {
-  const q = 'xmin=' + bounds.getWest().toFixed(6) + '&ymin=' + bounds.getSouth().toFixed(6) +
-    '&xmax=' + bounds.getEast().toFixed(6) + '&ymax=' + bounds.getNorth().toFixed(6);
+  const q = bboxQuery(bounds);
   const base = apiBase();
   const grab = (path) => fetchOk(base + path + '?' + q, { tries: 3, timeout: 20000 })
     .then((r) => r.json())
@@ -629,13 +628,13 @@ async function fetchArea(bounds) {
 
 async function loadArea() {
   if (areaTooBig()) return;
-  const b = map.getBounds();
+  const b = dataBounds();
   setStage('Fetching candidates');
   try {
     const list = await fetchArea(b);
     if (!list.length) {
       setStage('');
-      toast('Nothing left to import in this area');
+      toast('Nothing left to import within ' + spanKm(b) + ' km of here — try another area');
       return;
     }
     await ingest(list, list.length + ' candidates here');
@@ -674,25 +673,51 @@ async function loadRandom(quiet) {
   }
 }
 
-// The bbox URL for the current view. A browser *navigation* to this is not
-// subject to CORS, which is why the download route works where fetch cannot:
-// /josm_data sends no Access-Control-Allow-Origin at all.
-function areaDataUrl() {
+// Candidates are sparse, so a small bbox legitimately returns nothing at all —
+// measured against /josm_data, a z18 viewport (~150 m) and even a z16 one come
+// back as a bare `<osm version="0.6"/>`, 20 bytes, while 0.024° yields 56 nodes.
+// Every data request is therefore widened to at least this span about the centre
+// of the view, so neither route can hand back an empty result that looks like a
+// server fault.
+const MIN_DATA_SPAN = 0.03;
+
+function dataBounds() {
   const b = map.getBounds();
-  return apiBase() + '/josm_data?filter_by=bbox' +
-    '&layers=addresses_to_import,buildings_to_import' +
-    '&xmin=' + b.getWest().toFixed(6) + '&ymin=' + b.getSouth().toFixed(6) +
+  const c = b.getCenter();
+  const halfLat = Math.max((b.getNorth() - b.getSouth()) / 2, MIN_DATA_SPAN / 2);
+  const halfLon = Math.max((b.getEast() - b.getWest()) / 2, MIN_DATA_SPAN / 2);
+  return L.latLngBounds([c.lat - halfLat, c.lng - halfLon], [c.lat + halfLat, c.lng + halfLon]);
+}
+
+function bboxQuery(b) {
+  return 'xmin=' + b.getWest().toFixed(6) + '&ymin=' + b.getSouth().toFixed(6) +
     '&xmax=' + b.getEast().toFixed(6) + '&ymax=' + b.getNorth().toFixed(6);
 }
 
+// A browser *navigation* to this is not subject to CORS, which is why the
+// download route works where fetch cannot: /josm_data sends no
+// Access-Control-Allow-Origin at all.
+function areaDataUrl() {
+  return apiBase() + '/josm_data?filter_by=bbox' +
+    '&layers=addresses_to_import,buildings_to_import&' + bboxQuery(dataBounds());
+}
+
+// Judged on the widened bounds, since those are what actually gets requested.
+// There is no zoom test: span is the constraint the server cares about, and a
+// zoom floor rejected legal requests from a short window.
 function areaTooBig() {
-  const b = map.getBounds();
+  const b = dataBounds();
   const span = Math.max(b.getNorth() - b.getSouth(), b.getEast() - b.getWest());
-  if (map.getZoom() < 12 || span > 0.2) {
+  if (span > 0.2) {
     toast('Zoom in a bit — that area is too big to fetch', 'warn');
     return true;
   }
   return false;
+}
+
+// Rough N–S extent of the request, for telling the user what was asked for.
+function spanKm(b) {
+  return ((b.getNorth() - b.getSouth()) * 111.32).toFixed(1);
 }
 
 async function loadText(text, label) {
@@ -970,7 +995,10 @@ function initMap() {
   map = L.map('map', {
     zoomControl: false, attributionControl: true, preferCanvas: false,
     maxZoom: 22, doubleClickZoom: false, keyboard: false,
-  }).setView([52.2, 21.0], 18);
+    // Opens wide rather than at review zoom. show() re-frames each candidate
+    // with fitBounds, so this only affects the initial hunt for an area — and at
+    // z18 the first data request covered ~150 m and came back empty.
+  }).setView([52.2, 21.0], 14);
   makeImagery();
   ctxLayer = L.layerGroup().addTo(map);
   vertexGroup = L.layerGroup().addTo(map);
@@ -1515,8 +1543,10 @@ function bindUI() {
   $('loadAreaBtn').onclick = loadArea;
   $('getDataBtn').onclick = () => {
     if (areaTooBig()) return;
+    const b = dataBounds();
     window.open(areaDataUrl(), '_blank', 'noopener');
-    toast('Copy that page\'s text back into the box, or save it and use the file picker');
+    toast('Asked for a ' + spanKm(b) + ' km box. If it is just <osm version="0.6"/> ' +
+      'there is nothing pending here — pan elsewhere and try again.');
   };
   $('pasteBtn').onclick = loadPasted;
   $('randomBtn').onclick = loadRandom;

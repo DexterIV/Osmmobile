@@ -113,6 +113,28 @@ replaces the old, actively misleading "blocked or offline" for this case.
 The upstream fix is theirs: an `add_header` at both `server` and `location` level, or nginx and the
 application both adding it. Worth reporting to gugik2osm.
 
+### Candidates are sparse — small bboxes return nothing
+
+`/josm_data` answers `<osm version="0.6"/>`, exactly 20 bytes, for any box without pending objects,
+and that is most boxes. Around 52.2/21.0:
+
+| requested span | bytes | nodes | ways |
+|---|---|---|---|
+| ~0.0015° (a z18 viewport) | **20** | 0 | 0 |
+| ~0.006° (z16) | **20** | 0 | 0 |
+| 0.024° (z14) | 3,897 | 56 | 2 |
+| 0.030° (what the app now requests) | 8,116 | 104 | 10 |
+| 0.1° (z12) | 58,204 | 676 | 95 |
+
+The app used to open at **z18** and request the raw viewport, so the very first "Get this area's
+data" always downloaded a bare header — which reads as a broken server rather than an empty area.
+Every data request is now widened to `MIN_DATA_SPAN` (0.03°, about 3.3 km) about the centre of the
+view, and the map opens at z14. Review zoom is unaffected: `show()` re-frames each candidate with
+`fitBounds`, so the opening zoom only influences the hunt for an area.
+
+`areaTooBig` judges the *widened* bounds, and no longer has a zoom floor — span is what the server
+cares about, and the floor rejected legal requests from a short window.
+
 ### Upstream state, measured 2026-08-16
 
 Probed directly from the shell, so these are server-side facts. They say nothing about CORS from a

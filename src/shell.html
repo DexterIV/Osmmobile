@@ -197,7 +197,8 @@ input,select{width:100%;background:var(--ink);border:1px solid var(--line);color
       <button id="randomBtn">Take me somewhere</button>
     </div>
     <div class="startNote">
-      <span id="emptyMsg">Pan to an area, or jump to somewhere with work waiting.</span>
+      <span id="emptyMsg">Pan to a town, then load. Candidates are sparse — requests cover at
+      least 3 km regardless of zoom.</span>
       <button id="moreBtn">⋯</button>
     </div>
     <div class="startMore">
@@ -207,7 +208,8 @@ input,select{width:100%;background:var(--ink);border:1px solid var(--line);color
       <button class="ghost" id="pickBtn" disabled>Loading…</button>
       <p><b>Load this area</b> is blocked by the upstream server's CORS headers, not by your
       network. <b>Get this area's data</b> opens it in a new tab instead, which the browser
-      allows — copy that text back into the box above, or save it and open the file.</p>
+      allows — copy that text back into the box above, or save it and open the file. A response of
+      just <b>&lt;osm version="0.6"/&gt;</b> means nothing is pending there, so pan elsewhere.</p>
       <p>Keys: <b>A</b> accept, <b>R</b> reject, <b>L</b> later, <b>G</b> auto-fit,
       <b>Z</b> undo, <b>V</b> vertices, arrows nudge.</p>
     </div>
