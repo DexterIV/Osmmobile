@@ -331,6 +331,28 @@ Reviewing each object does **not** make this "not an import" in the wiki's sense
 originates from BDOT10k, so the Import Guidelines still apply: announce in the Polska category on
 community.openstreetmap.org, use a separate account, one locality per changeset.
 
+## Open in iD
+
+The `iD` button in the tool column (or `E`) opens `https://www.openstreetmap.org/edit?editor=id` at
+the current candidate, for when one-object-at-a-time is the wrong tool and you want iD's imagery
+switcher, history, measurement or relation editing.
+
+- **A new tab, deliberately.** Navigating away would discard the in-memory queue; only the verdicts
+  are persisted.
+- `background=` is set from the imagery preset via `ID_BACKGROUND`, using ids from the
+  editor-layer-index — the same catalogue iD reads — so iD opens on the imagery you were reviewing
+  against. `orto-high` maps to `Geoportal2-PL-HighResolution-aerial_image_WMS`, `orto-std` and
+  `orto-proxy` to `Geoportal2-PL-aerial_image_WMS` (the proxy fronts StandardResolution). An
+  unrecognised id is ignored by iD, so a stale entry degrades to "iD picks its own background"
+  rather than breaking.
+- `comment` and `source` are prefilled so an edit made over there is attributed like one made here.
+- **The candidate itself is not in OSM**, so iD cannot select it — there is no id to pass. The button
+  says so in a toast. Only objects already mapped are editable there.
+
+It sits in `#padTools`, not in the verdict bar. The bar's three buttons are muscle memory and also
+carry swipe handlers, so a fourth button there would both shift them and risk a swipe navigating away
+mid-review.
+
 ## Nothing is sent without being read first
 
 The up-arrow opens the **queue review sheet**; it does not upload. Previously a single tap on it

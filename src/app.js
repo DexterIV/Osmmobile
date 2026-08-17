@@ -2109,6 +2109,47 @@ function csTags(count, city) {
   return t;
 }
 
+// ---- Open in iD ------------------------------------------------------------
+// For the times when this app's one-object-at-a-time view is the wrong tool:
+// iD has the imagery switcher, measurement, history, relation editing and so on.
+//
+// Ids are from the editor-layer-index, which is the same catalogue iD reads, so
+// iD opens on the imagery you were just reviewing against rather than its
+// default. An unrecognised id is ignored by iD rather than breaking, so a stale
+// entry here degrades to "iD picks its own background".
+const ID_BACKGROUND = {
+  'orto-high': 'Geoportal2-PL-HighResolution-aerial_image_WMS',
+  'orto-std': 'Geoportal2-PL-aerial_image_WMS',
+  'orto-archive': 'Geoportal2-PL-aerial_archival_image_WMS',
+  // The budynki proxy fronts StandardResolution, so this is the same picture.
+  'orto-proxy': 'Geoportal2-PL-aerial_image_WMS',
+};
+
+function idEditorUrl(c) {
+  const centre = c.kind === 'address' ? c.ring[0] : centroid(c.ring);
+  const z = Math.max(17, Math.min(21, map.getZoom()));
+  const hash = ['map=' + z.toFixed(0) + '/' + centre[0].toFixed(5) + '/' + centre[1].toFixed(5)];
+  const bg = ID_BACKGROUND[S.imagery];
+  if (bg) hash.push('background=' + encodeURIComponent(bg));
+  // Prefill the changeset fields so an edit made over there is still attributed
+  // the same way as one made here.
+  const city = c.tags['addr:city'] || c.tags['addr:place'] || '';
+  if (S.comment) hash.push('comment=' + encodeURIComponent(S.comment + (city ? ' — ' + city : '')));
+  if (S.source) hash.push('source=' + encodeURIComponent(S.source));
+  return OSM + '/edit?editor=id#' + hash.join('&');
+}
+
+function openInId() {
+  const c = cur();
+  if (!c) return;
+  // A new tab, deliberately: navigating away would discard the in-memory queue
+  // of candidates, and only the verdicts are persisted.
+  window.open(idEditorUrl(c), '_blank', 'noopener');
+  // Worth saying once: the candidate is not in OSM yet, so iD cannot select it.
+  toast('Opened iD at this spot. The candidate itself is not in OSM yet, so only ' +
+    'existing objects are editable there.');
+}
+
 // ---- Review before sending -------------------------------------------------
 // The up-arrow used to upload immediately. Nothing between an accidental tap and
 // a live changeset, and no way to see what had accumulated across sessions.
@@ -2296,6 +2337,7 @@ function bindUI() {
   $('acceptBtn').onclick = () => verdict('accept');
   $('undoBtn').onclick = undo;
   $('autoBtn').onclick = autoAlign;
+  $('idBtn').onclick = openInId;
   $('vertexToggle').onclick = (e) => {
     e.currentTarget.classList.toggle('on');
     drawVertices();
@@ -2356,6 +2398,7 @@ function bindUI() {
     else if (low === 'z') undo();
     else if (low === 'g') autoAlign();
     else if (low === 'v') $('vertexToggle').click();
+    else if (low === 'e') openInId();
   });
 
   let sx = 0;
