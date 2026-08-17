@@ -39,8 +39,9 @@ That check exists because a missing id previously shipped as a runtime crash.
 | `sw.js`, `manifest.webmanifest`, `icon-*.png` | PWA shell (`sw.js` generated) |
 | `test/retry.test.mjs` | retry/timeout helpers, sliced out of `app.js` and run against a stub fetch |
 | `test/mvt.test.mjs` | the hand-written vector-tile decoder, against real captured tiles |
+| `test/context.test.mjs` | overlap and duplicate-address verdicts, against real OSM footprints |
 | `test/parse.test.mjs` | the wasm `.osm` scanner, against a real captured `/josm_data` response |
-| `test/fixtures/` | live captures: a `/josm_data` export, a z14 buildings tile, a z6 cluster tile |
+| `test/fixtures/` | live captures: a `/josm_data` export, z14 buildings and z6 cluster tiles, an OSM `/map` cell |
 | `setup.sh` | WSL bootstrap: deps, gh auth, build, push, enable Pages, serve |
 
 ## Data source — verified by reading gugik2osm's source
@@ -106,6 +107,46 @@ GeoJSON feature shape is `properties: { id, tags }` where `id` is the upstream `
 sticks to the object rather than to a coordinate hash.
 
 `LAYERS=Raster` is confirmed from their `map.js`. Not a guess.
+
+## What is already in OSM — the review's other half
+
+A candidate cannot be judged without knowing what is mapped there already. This used to be one
+Overpass query per area returning building **centroids** (`out center`), drawn as cyan dots, with the
+`clear`/`near`/`overlap` tier computed from centroid distance. That was not enough, in two ways that
+both produced false "clear" verdicts:
+
+- A large existing building's centroid can be 30 m away while its footprint **covers the candidate
+  completely**. Distance to a centroid says nothing about containment.
+- The query fetched **no address nodes at all**, so every PRG address was judged with no idea whether
+  that house number was already mapped.
+
+Real geometry is now fetched for a ~300 m cell around the candidate on screen, snapped to a grid so
+neighbouring candidates share a cell, cached in the `ctx` store under `osmctx/<cell>`.
+
+**Source is the OSM API `/api/0.6/map`, not Overpass.** Overpass answered the identical cell query
+with `504 Gateway Timeout` twice in a row under load, where `/map` returned in 0.25–0.32 s on four
+consecutive tries. `/map` is also authoritative and current, echoes the request Origin so CORS works,
+and its XML goes through the wasm scanner the app already has. Its 50 000-node ceiling rules it out
+for the whole 3 km candidate box — that returns `400 too many nodes` — but a 300 m cell holds about
+1 100 nodes and 283 KB. Per-cell, not up front: the same area from Overpass with full geometry was
+4.2 MB.
+
+`/map` returns every node of any way **touching** the box, so footprints straddling a cell edge
+arrive whole and geometry legitimately extends outside the requested bbox. Do not "fix" that by
+clipping.
+
+Only ways actually tagged `building` become footprints; `/map` returns everything in the box, and
+drawing every closed way would put car parks and hedges on screen as though they were buildings.
+
+The verdict then comes from geometry, not distance: containment **either way** counts as an overlap,
+since a candidate inside an existing footprint is a duplicate and so is an existing building sitting
+inside the candidate. For addresses, the same house number within 30 m — on a node or on a building —
+reports as already mapped, and the street is compared when both sides have one, because number 5
+exists on every street in town. The number is echoed as tagged, not lowercased.
+
+Verified in a browser: a cell loads in ~190 ms with 47 footprints, a candidate copied onto a real
+footprint reads `covered by an OSM building`, the duplicate check reports `5 already in OSM here`,
+and 53 dashed footprints plus house-number labels draw on screen.
 
 ### CORS reality, measured 2026-08-16
 

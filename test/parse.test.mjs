@@ -92,3 +92,60 @@ assert.match(span, /Kr&#243;tka/, 'the raw span should still hold the undecoded 
 console.log('  ok  numeric character reference survives into the tag span for decoding');
 
 console.log('\nparse: real upstream payload parses correctly');
+
+// --- the OSM API /map response the context layer relies on ------------------
+// Different shape from josm_data: positive ids, ~283 KB, and a mix of everything
+// in the box rather than only import candidates. ctxFromOsmXml resolves building
+// ways against it, so the scanner has to cope with the real thing.
+const mapXml = readFileSync(new URL('./fixtures/osm-map-cell.xml', import.meta.url), 'utf8');
+const me = new TextEncoder().encode(mapXml);
+const mp = w.alloc(me.length);
+new Uint8Array(mem(), mp, me.length).set(me);
+w.setSource(mp, me.length);
+w.parse();
+
+const mnc = w.nodeCount(), mwc = w.wayCount();
+console.log('osm /map cell: nodes', mnc, 'ways', mwc, 'refs', w.refsCount());
+assert.ok(mnc > 1000, 'expected 1100+ nodes, got ' + mnc);
+assert.ok(mwc > 100, 'expected 100+ ways, got ' + mwc);
+
+const mid = new Float64Array(mem(), w.ptrNodeId(), mnc);
+const mlat = new Float64Array(mem(), w.ptrNodeLat(), mnc);
+const mlon = new Float64Array(mem(), w.ptrNodeLon(), mnc);
+// /map returns every node of any way that touches the bbox, so geometry
+// legitimately spills outside it — that is why footprints straddling a cell
+// edge arrive whole. The bound here is therefore generous on purpose; it is
+// checking the scanner did not garble coordinates, not that the server clipped.
+for (let i = 0; i < mnc; i++) {
+  assert.ok(mid[i] > 0, 'real OSM ids are positive, got ' + mid[i]);
+  assert.ok(mlat[i] > 52.15 && mlat[i] < 52.25, 'lat implausible: ' + mlat[i]);
+  assert.ok(mlon[i] > 20.94 && mlon[i] < 21.05, 'lon implausible: ' + mlon[i]);
+}
+console.log('  ok  every node has a positive id and a plausible coordinate');
+
+// Building ways must resolve fully against the node table, which is exactly what
+// ctxFromOsmXml needs in order to draw a footprint at all.
+const mwA = new Int32Array(mem(), w.ptrWayNdA(), mwc);
+const mwN = new Int32Array(mem(), w.ptrWayNdN(), mwc);
+const mwtA = new Int32Array(mem(), w.ptrWayTagA(), mwc);
+const mwtB = new Int32Array(mem(), w.ptrWayTagB(), mwc);
+const mrefs = new Float64Array(mem(), w.ptrRefs(), w.refsCount());
+const bkey = new TextEncoder().encode('building');
+const bp = w.alloc(bkey.length);
+new Uint8Array(mem(), bp, bkey.length).set(bkey);
+const mById = new Map();
+for (let i = 0; i < mnc; i++) mById.set(mid[i], i);
+
+let buildings = 0, resolvable = 0, closed = 0;
+for (let i = 0; i < mwc; i++) {
+  if (!w.spanHasKey(mwtA[i], mwtB[i], bp, bkey.length)) continue;
+  buildings++;
+  const r = Array.from(mrefs.slice(mwA[i], mwA[i] + mwN[i]));
+  if (r.every((id) => mById.has(id))) resolvable++;
+  if (r.length > 2 && r[0] === r[r.length - 1]) closed++;
+}
+console.log('  building ways', buildings, 'resolvable', resolvable, 'closed', closed);
+assert.ok(buildings >= 15, 'expected 15+ building ways, got ' + buildings);
+assert.equal(resolvable, buildings, 'every building way must resolve, or footprints vanish');
+assert.equal(closed, buildings, 'building ways should be closed rings');
+console.log('  ok  all building ways resolve to closed rings');
