@@ -38,6 +38,9 @@ That check exists because a missing id previously shipped as a runtime crash.
 | `src/sw.js` | service worker source; `__BUILD_ID__` is stamped at build time |
 | `sw.js`, `manifest.webmanifest`, `icon-*.png` | PWA shell (`sw.js` generated) |
 | `test/retry.test.mjs` | retry/timeout helpers, sliced out of `app.js` and run against a stub fetch |
+| `test/mvt.test.mjs` | the hand-written vector-tile decoder, against real captured tiles |
+| `test/parse.test.mjs` | the wasm `.osm` scanner, against a real captured `/josm_data` response |
+| `test/fixtures/` | live captures: a `/josm_data` export, a z14 buildings tile, a z6 cluster tile |
 | `setup.sh` | WSL bootstrap: deps, gh auth, build, push, enable Pages, serve |
 
 ## Data source — verified by reading gugik2osm's source
@@ -59,7 +62,44 @@ Base: `https://budynki.openstreetmap.org.pl`.
 | `GET /random/` | `{lon, lat}`, server-weighted ~95% toward areas with many pending objects |
 | `GET /layers/` | available layer ids |
 | `GET /josm_data?filter_by=bbox&layers=addresses_to_import,buildings_to_import&...` | `.osm` XML, fallback path |
-| `/orto` | their reverse proxy in front of the GUGiK ORTO WMS, **with CORS headers** |
+| `/orto` | their reverse proxy in front of the GUGiK ORTO WMS. **Its CORS headers are broken — see below** |
+| `GET /tiles/{z}/{x}/{y}.pbf` | **the only candidate source a browser can read.** MVT, one CORS header |
+
+### Vector tiles are the working data path
+
+Because `/sc/*` and `/josm_data` are unreadable from a browser (below), candidates come from the
+vector tiles instead. `/tiles/{z}/{x}/{y}.pbf` sends `Access-Control-Allow-Origin` exactly once and
+carries the same BDOT10k geometry with OSM-ready tags. The served pyramid, checked directly:
+
+| zoom | layer | contents |
+|---|---|---|
+| ≤10 | `buildings_clustered` | points with `no_of_points`; used to find somewhere with work |
+| 11–12 | `buildings_centroids` | points, no properties |
+| 13–14 | `buildings` | full polygons plus tags |
+
+`maxzoom` is **14** — z15 and above return 404. An earlier note here read those 404 pages as tiles
+because it only looked at response size, not status; always check the status.
+
+- **Tags.** The layer carries BDOT metadata (`status_bdot`, `funkcja_*`, `aktualnosc_*`, `lokalnyid`)
+  beside genuine OSM tags. Only `building`, `amenity`, `man_made`, `leisure`, `historic`, `tourism`
+  and `building_levels`→`building:levels` are promoted, plus `source:building=BDOT`, which is exactly
+  what `/josm_data` emits for the same object. `lokalnyid` becomes `srcId`, so a verdict reached
+  through tiles and one reached through a file key on the same `bdot:<id>`.
+- **Precision.** MVT quantises to a 4096 grid, so at z14 outlines sit on a **~37 cm** grid (±18 cm
+  per vertex). That is below BDOT10k's own positional accuracy, but it is not the official geometry,
+  and the app says `±37 cm from tiles` on every load rather than hiding it. Exact geometry needs the
+  `/josm_data` download route.
+- **Clipping.** MVT clips polygons at tile edges. About 4.6% of features touch an edge (10 of 217
+  sampled); deduplicating by `lokalnyid` across neighbouring tiles recovers most, because a polygon
+  cut in one tile is usually whole in the next. Any that remain cut are **skipped, not uploaded** — a
+  clipped outline is the wrong shape, and the count is reported.
+- **No addresses.** The upstream style references `addresses`, `addresses_clustered` and
+  `addresses_geomonly`, but **none are generated** — zero address features across 40 tiles in ten
+  cities. Addresses are buildings-only territory for the in-app path; they need the file or paste
+  route. Re-check this before assuming addresses are unavailable forever.
+- `/random/` is **not used**. `buildings_clustered` answers the same question, weighted by how much
+  work is actually there, from a readable endpoint. One z6 tile is ~110 KB, covers a large slice of
+  Poland, and is cached in the `ctx` store, so it is fetched one at a time rather than country-wide.
 
 GeoJSON feature shape is `properties: { id, tags }` where `id` is the upstream `lokalnyid` and
 `tags` are already OSM-ready. The decision store keys on `bdot:<id>` / `prg:<id>` so a verdict
@@ -92,11 +132,14 @@ Chromium's console, verbatim:
 fatal to `fetch`, and retrying cannot help where the fault is deterministic — `/sc/*` fails on every
 single attempt. Consequences:
 
-- Candidate fetching over `/sc/*` and `/josm_data` is **dead from a browser**. Three routes still
-  work and none needs a third party: **Get this area's data** (opens the `/josm_data` bbox URL in a
-  new tab — a *navigation* is not CORS-restricted), the **paste box**, and the **file picker**. A
-  CORS proxy would restore one-tap loading but would put every candidate fetch and your IP through
-  someone else's server, so it is deliberately not implemented.
+- Candidate fetching over `/sc/*` and `/josm_data` is **dead from a browser**, and `fetchArea` — which
+  read both — has been deleted rather than left to fail. Buildings now come from the vector tiles
+  above, which is what makes **Load this area** work at all. For addresses and for exact geometry
+  there are three further routes, none needing a third party: **Get this area's data** (opens the
+  `/josm_data` bbox URL in a new tab — a *navigation* is not CORS-restricted), the **paste box**, and
+  the **file picker**. A CORS proxy would restore one-tap loading of everything but would put every
+  candidate fetch and the user's IP through someone else's server, so it is deliberately not
+  implemented.
 - `/orto/` tiles still **draw**, because a plain `<img>` performs no CORS check at all. What breaks
   is `fetch`, which is what the IndexedDB tile cache and auto-fit's pixel reads need. So expect
   working imagery with no offline caching and no auto-fit until this is fixed upstream.
@@ -293,7 +336,14 @@ but that was never measured.** Do not describe the wasm as a large speedup.
 - Run diagnostics from the real origin and confirm `imagery` reports pixels readable. Published at
   `https://dexteriv.github.io/Osmmobile/` and serving; `/sc/*` and `/layers/` are confirmed live
   server-side, `/random/` is confirmed broken, `/orto` is confirmed ~50% flaky.
-- Decide what to do about `/random/` being 500. Either report it upstream or drop the button.
+- `/random/` being 500 no longer matters — the button uses `buildings_clustered` instead — but the
+  endpoint is still broken upstream and diagnostics still probes it.
+- Decide whether tile-derived geometry should upload at all, or whether accepting a candidate loaded
+  from tiles should require re-fetching that one object's exact outline. At ±18 cm per vertex it is
+  well inside BDOT10k's own error, but it is resampled rather than original, and an importer may
+  reasonably want the source geometry byte-for-byte.
+- Re-check whether the upstream address tile layers have started being generated; if they have, the
+  in-app path covers addresses too and the paste route becomes a convenience rather than a necessity.
 - The `~50%` figure for `/orto` came from 24 requests on one connection. If it is really load
   dependent rather than random, jittered retries may be making it worse, not better — worth
   measuring per-tile attempt counts on a real screenful before trusting `TILE_TRIES = 4`. Replaying

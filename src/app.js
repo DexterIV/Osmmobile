@@ -289,21 +289,25 @@ function parseGeoJson(text) {
   const out = [];
   for (const f of feats) {
     if (!f.geometry) continue;
-    const tags = Object.assign({}, f.properties || {});
-    if (f.geometry.type === 'Polygon') {
-      const ring = f.geometry.coordinates[0].map(([x, y]) => [y, x]);
+    // tagsOf, not a copy of properties: /sc/* wraps the OSM tags in
+    // properties.tags beside an id, so copying properties wholesale produced a
+    // tag literally called "tags" and lost the id that decisions key on.
+    const tags = tagsOf(f.properties);
+    const srcId = f.properties && f.properties.id;
+    if (f.geometry.type === 'Point') {
+      out.push({
+        kind: 'address',
+        ring: [[f.geometry.coordinates[1], f.geometry.coordinates[0]]],
+        tags, srcId,
+      });
+      continue;
+    }
+    for (const r of ringsOf(f.geometry)) {
+      const ring = r.map(([x, y]) => [y, x]);
       const a = ring[0], z = ring[ring.length - 1];
-      if (a[0] === z[0] && a[1] === z[1]) ring.pop();
-      out.push({ kind: 'building', ring, tags });
-    } else if (f.geometry.type === 'Point') {
-      out.push({ kind: 'address', ring: [[f.geometry.coordinates[1], f.geometry.coordinates[0]]], tags });
-    } else if (f.geometry.type === 'MultiPolygon') {
-      for (const poly of f.geometry.coordinates) {
-        const ring = poly[0].map(([x, y]) => [y, x]);
-        const a = ring[0], z = ring[ring.length - 1];
-        if (a[0] === z[0] && a[1] === z[1]) ring.pop();
-        out.push({ kind: 'building', ring, tags: Object.assign({}, tags) });
-      }
+      if (a && z && a[0] === z[0] && a[1] === z[1]) ring.pop();
+      if (ring.length < 3) continue;
+      out.push({ kind: 'building', ring, tags: Object.assign({}, tags), srcId });
     }
   }
   return out;
@@ -582,48 +586,314 @@ async function diagnose() {
   $('diagOut').style.display = 'block';
 }
 
-async function fetchArea(bounds) {
-  const q = bboxQuery(bounds);
-  const base = apiBase();
-  const grab = (path) => fetchOk(base + path + '?' + q, { tries: 3, timeout: 20000 })
-    .then((r) => r.json())
-    .catch((err) => { throw new Error(path + ' -> ' + err.message); });
-  let bl, ad;
-  try {
-    [bl, ad] = await Promise.all([
-      grab('/sc/proposed_buildings'),
-      grab('/sc/proposed_addresses'),
-    ]);
-  } catch (err) {
-    const legacy = base + '/josm_data?filter_by=bbox&layers=addresses_to_import,buildings_to_import&' + q;
-    // josm_data builds the XML on demand and is markedly slower.
-    const r = await fetchRetry(legacy, { tries: 2, timeout: 45000 }).catch(() => null);
-    if (r && r.ok) {
-      toast('Primary endpoint failed, used josm_data instead (no reject reporting)', 'warn');
-      return parseOsmXml(await r.text());
-    }
-    throw err;
+// fetchArea, which read /sc/proposed_buildings and /sc/proposed_addresses with a
+// /josm_data fallback, has been removed. Every one of those paths is unreadable
+// from a browser — /sc/* sends Access-Control-Allow-Origin twice on every single
+// request, /josm_data sends none — so it could only ever fail, and keeping it
+// meant "Load this area" always failed too. Vector tiles replace it below.
+// Diagnostics still probes those endpoints, which is where to look if the
+// upstream headers are ever fixed.
+
+// ---- Mapbox Vector Tiles ---------------------------------------------------
+// /sc/* and /josm_data cannot be read from a browser: the first sends
+// Access-Control-Allow-Origin twice, the second not at all. /tiles/{z}/{x}/{y}.pbf
+// sends it exactly once, so it is the one candidate source that works in-app,
+// and it carries the same BDOT10k geometry with OSM-ready tags. Decoded by hand
+// because the build inlines everything into a single file.
+//
+// Only the subset the buildings layers use: layers, features, string and numeric
+// values, and MoveTo/LineTo/ClosePath geometry.
+
+const TILE_DATA_Z = 14;   // deepest zoom served, and so the finest geometry
+const CLUSTER_Z = 6;      // buildings_clustered, for finding somewhere busy
+const POLAND = [[49.0, 14.1], [54.9, 24.2]];
+const TD = new TextDecoder();
+
+function pbVarint(r) {
+  let shift = 0, out = 0, byte;
+  do {
+    byte = r.b[r.p++];
+    // Multiplied rather than shifted: ids exceed 32 bits and << would wrap.
+    out += (byte & 0x7f) * (shift ? Math.pow(2, shift) : 1);
+    shift += 7;
+  } while (byte & 0x80);
+  return out;
+}
+const pbZigzag = (n) => (n >>> 1) ^ -(n & 1);
+
+function pbSkip(r, wire) {
+  if (wire === 0) pbVarint(r);
+  else if (wire === 1) r.p += 8;
+  else if (wire === 2) r.p += pbVarint(r);
+  else if (wire === 5) r.p += 4;
+  else throw new Error('mvt: unknown wire type ' + wire);
+}
+
+function mvtDecode(bytes) {
+  const r = { b: bytes, p: 0 };
+  const layers = {};
+  while (r.p < bytes.length) {
+    const key = pbVarint(r), field = key >> 3, wire = key & 7;
+    if (field === 3 && wire === 2) {
+      const len = pbVarint(r);
+      const L = mvtLayer(bytes.subarray(r.p, r.p + len));
+      r.p += len;
+      if (L.name) layers[L.name] = L;
+    } else pbSkip(r, wire);
   }
-  const out = [];
-  for (const f of (bl.features || [])) {
-    for (const r of ringsOf(f.geometry)) {
-      const ring = r.map(([x, y]) => [y, x]);
-      const a = ring[0], z = ring[ring.length - 1];
-      if (a && z && a[0] === z[0] && a[1] === z[1]) ring.pop();
-      if (ring.length < 3) continue;
-      out.push({ kind: 'building', ring, tags: tagsOf(f.properties), srcId: f.properties && f.properties.id });
-    }
-  }
-  for (const f of (ad.features || [])) {
-    if (!f.geometry || f.geometry.type !== 'Point') continue;
-    out.push({
-      kind: 'address',
-      ring: [[f.geometry.coordinates[1], f.geometry.coordinates[0]]],
-      tags: tagsOf(f.properties),
-      srcId: f.properties && f.properties.id,
-    });
+  return layers;
+}
+
+function mvtLayer(bytes) {
+  const r = { b: bytes, p: 0 };
+  const out = { name: '', extent: 4096, keys: [], values: [], features: [] };
+  while (r.p < bytes.length) {
+    const key = pbVarint(r), field = key >> 3, wire = key & 7;
+    if (field === 5 && wire === 0) { out.extent = pbVarint(r); continue; }
+    if (wire !== 2) { pbSkip(r, wire); continue; }
+    const len = pbVarint(r);
+    const sub = bytes.subarray(r.p, r.p + len);
+    r.p += len;
+    if (field === 1) out.name = TD.decode(sub);
+    else if (field === 2) out.features.push(sub);
+    else if (field === 3) out.keys.push(TD.decode(sub));
+    else if (field === 4) out.values.push(mvtValue(sub));
   }
   return out;
+}
+
+function mvtValue(bytes) {
+  const r = { b: bytes, p: 0 };
+  let v = null;
+  const dv = () => new DataView(bytes.buffer, bytes.byteOffset + r.p);
+  while (r.p < bytes.length) {
+    const key = pbVarint(r), field = key >> 3, wire = key & 7;
+    if (field === 1 && wire === 2) {
+      const n = pbVarint(r);
+      v = TD.decode(bytes.subarray(r.p, r.p + n));
+      r.p += n;
+    } else if (field === 2 && wire === 5) { v = dv().getFloat32(0, true); r.p += 4; }
+    else if (field === 3 && wire === 1) { v = dv().getFloat64(0, true); r.p += 8; }
+    else if ((field === 4 || field === 5) && wire === 0) v = pbVarint(r);
+    else if (field === 6 && wire === 0) v = pbZigzag(pbVarint(r));
+    else if (field === 7 && wire === 0) v = pbVarint(r) !== 0;
+    else pbSkip(r, wire);
+  }
+  return v;
+}
+
+function mvtFeature(bytes, layer) {
+  const r = { b: bytes, p: 0 };
+  let type = 0, geom = null;
+  const tags = [];
+  while (r.p < bytes.length) {
+    const key = pbVarint(r), field = key >> 3, wire = key & 7;
+    if (field === 3 && wire === 0) { type = pbVarint(r); continue; }
+    if (wire !== 2) { pbSkip(r, wire); continue; }
+    const len = pbVarint(r);
+    const sub = bytes.subarray(r.p, r.p + len);
+    r.p += len;
+    if (field === 2) { const rr = { b: sub, p: 0 }; while (rr.p < sub.length) tags.push(pbVarint(rr)); }
+    else if (field === 4) geom = sub;
+  }
+  const props = {};
+  for (let i = 0; i + 1 < tags.length; i += 2) {
+    const k = layer.keys[tags[i]], v = layer.values[tags[i + 1]];
+    if (k !== undefined && v !== undefined) props[k] = v;
+  }
+  return { type, props, rings: geom ? mvtRings(geom) : [] };
+}
+
+function mvtRings(g) {
+  const r = { b: g, p: 0 };
+  const rings = [];
+  let cur = null, x = 0, y = 0;
+  while (r.p < g.length) {
+    const cmd = pbVarint(r), id = cmd & 7, count = cmd >> 3;
+    if (id === 1) {
+      for (let i = 0; i < count; i++) {
+        x += pbZigzag(pbVarint(r)); y += pbZigzag(pbVarint(r));
+        if (cur && cur.length) rings.push(cur);
+        cur = [[x, y]];
+      }
+    } else if (id === 2) {
+      for (let i = 0; i < count; i++) {
+        x += pbZigzag(pbVarint(r)); y += pbZigzag(pbVarint(r));
+        if (cur) cur.push([x, y]);
+      }
+    } else if (id === 7) {
+      if (cur && cur.length) { rings.push(cur); cur = null; }
+    } else break;
+  }
+  if (cur && cur.length) rings.push(cur);
+  return rings;
+}
+
+function tileXY(lat, lon, z) {
+  const n = Math.pow(2, z);
+  const rad = lat * Math.PI / 180;
+  return [
+    Math.floor((lon + 180) / 360 * n),
+    Math.floor((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2 * n),
+  ];
+}
+
+function tilePointToLatLon(z, tx, ty, px, py, extent) {
+  const n = Math.pow(2, z);
+  const lon = (tx + px / extent) / n * 360 - 180;
+  const yy = 1 - 2 * (ty + py / extent) / n;
+  return [Math.atan(Math.sinh(Math.PI * yy)) * 180 / Math.PI, lon];
+}
+
+function tilesCovering(b, z) {
+  const [x0, y0] = tileXY(b.getNorth(), b.getWest(), z);
+  const [x1, y1] = tileXY(b.getSouth(), b.getEast(), z);
+  const out = [];
+  for (let x = Math.min(x0, x1); x <= Math.max(x0, x1); x++) {
+    for (let y = Math.min(y0, y1); y <= Math.max(y0, y1); y++) out.push([x, y]);
+  }
+  return out;
+}
+
+// Tile geometry is quantised to the extent grid, so report the resulting
+// resolution honestly rather than implying the outlines are exact.
+function tileQuantCm(lat, z) {
+  return (40075017 * Math.cos(lat * Math.PI / 180) / Math.pow(2, z) / 4096) * 100;
+}
+
+const TILE_TAGS = ['building', 'amenity', 'man_made', 'leisure', 'historic', 'tourism'];
+
+// The tile carries BDOT metadata beside the OSM tags; only the latter may go up.
+// Matches what /josm_data emits for the same object: building, building:levels,
+// source:building=BDOT.
+function tagsFromTile(p) {
+  const t = {};
+  for (const k of TILE_TAGS) {
+    if (p[k] !== undefined && p[k] !== null && p[k] !== '') t[k] = String(p[k]);
+  }
+  if (p.building_levels !== undefined && p.building_levels !== null && p.building_levels !== '') {
+    t['building:levels'] = String(p.building_levels);
+  }
+  if (!t.building) t.building = 'yes';
+  t['source:building'] = 'BDOT';
+  return t;
+}
+
+function ringSignedArea(r) {
+  let a = 0;
+  for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+    a += r[j][0] * r[i][1] - r[i][0] * r[j][1];
+  }
+  return a / 2;
+}
+
+async function tileBytes(z, x, y, tries) {
+  const r = await fetchOk(apiBase() + '/tiles/' + z + '/' + x + '/' + y + '.pbf',
+    { tries: tries || 3, timeout: 20000 });
+  return new Uint8Array(await r.arrayBuffer());
+}
+
+// Buildings for an area, straight from the vector tiles. Addresses are not
+// available this way: the served pyramid is buildings_clustered (z<=10),
+// buildings_centroids (z11-12) and buildings (z13-14) — the address layers the
+// upstream style references are not generated, checked across 40 tiles in ten
+// cities. Addresses still need the file or paste route.
+async function fetchAreaTiles(bounds) {
+  const tiles = tilesCovering(bounds, TILE_DATA_Z);
+  const got = await Promise.all(tiles.map(async ([x, y]) => {
+    try {
+      const buf = await tileBytes(TILE_DATA_Z, x, y);
+      return { x, y, layers: buf.length ? mvtDecode(buf) : {} };
+    } catch (err) { return { x, y, err }; }
+  }));
+
+  let failed = 0, clipped = 0;
+  const best = new Map();
+  for (const t of got) {
+    if (t.err) { failed++; continue; }
+    const L = t.layers.buildings;
+    if (!L) continue;
+    for (const fb of L.features) {
+      const f = mvtFeature(fb, L);
+      if (f.type !== 3) continue;
+      for (const ring of f.rings) {
+        if (ring.length < 3) continue;
+        // Exterior rings wind positive in tile coordinates; the rest are holes.
+        if (ringSignedArea(ring) <= 0) continue;
+        const cut = ring.some(([px, py]) =>
+          px <= 0 || py <= 0 || px >= L.extent || py >= L.extent);
+        const id = f.props.lokalnyid;
+        const key = id || t.x + '/' + t.y + '/' + ring[0][0] + ',' + ring[0][1];
+        const prev = best.get(key);
+        if (prev) {
+          // A polygon crossing a tile edge is clipped in one tile and whole in
+          // its neighbour, so always prefer the uncut copy.
+          const better = (!cut && prev.cut) ||
+            (cut === prev.cut && ring.length > prev.ring.length);
+          if (!better) continue;
+        }
+        best.set(key, {
+          cut,
+          kind: 'building',
+          ring: ring.map(([px, py]) => tilePointToLatLon(TILE_DATA_Z, t.x, t.y, px, py, L.extent)),
+          tags: tagsFromTile(f.props),
+          srcId: id,
+        });
+      }
+    }
+  }
+
+  const out = [];
+  for (const c of best.values()) {
+    // A still-clipped outline is the wrong shape, and uploading it would be
+    // worse than not having it. Those are reachable through the file route.
+    if (c.cut) { clipped++; continue; }
+    delete c.cut;
+    out.push(c);
+  }
+  return { list: out, failed, clipped, tiles: tiles.length };
+}
+
+// Weighted pick from buildings_clustered, replacing the dead /random/. One z6
+// tile is about 110 KB and covers a large slice of Poland, so it is fetched one
+// at a time and cached rather than pulling the whole country.
+async function clusterJump() {
+  const order = tilesCovering(L.latLngBounds(POLAND[0], POLAND[1]), CLUSTER_Z);
+  for (let i = order.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = order[i]; order[i] = order[j]; order[j] = t;
+  }
+  for (const [x, y] of order.slice(0, 3)) {
+    const ck = 'clusters/' + CLUSTER_Z + '/' + x + '/' + y;
+    let buf = null;
+    const hit = await dbGet('ctx', ck).catch(() => null);
+    if (hit && hit.buf && Date.now() - hit.t < S.ctxTTLhours * 3600e3) {
+      buf = new Uint8Array(hit.buf);
+    } else {
+      try {
+        buf = await tileBytes(CLUSTER_Z, x, y, 2);
+        dbPut('ctx', ck, { t: Date.now(), buf: buf.buffer }).catch(() => {});
+      } catch (err) { continue; }
+    }
+    if (!buf.length) continue;
+    const L = mvtDecode(buf).buildings_clustered;
+    if (!L || !L.features.length) continue;
+    const picks = [];
+    let total = 0;
+    for (const fb of L.features) {
+      const f = mvtFeature(fb, L);
+      if (!f.rings.length || !f.rings[0].length) continue;
+      const w = Math.max(1, Number(f.props.no_of_points) || 1);
+      total += w;
+      picks.push({ w, pt: f.rings[0][0] });
+    }
+    if (!picks.length) continue;
+    let r = Math.random() * total;
+    let chosen = picks[picks.length - 1];
+    for (const p of picks) { r -= p.w; if (r <= 0) { chosen = p; break; } }
+    return tilePointToLatLon(CLUSTER_Z, x, y, chosen.pt[0], chosen.pt[1], L.extent);
+  }
+  return null;
 }
 
 async function loadArea() {
@@ -631,45 +901,45 @@ async function loadArea() {
   const b = dataBounds();
   setStage('Fetching candidates');
   try {
-    const list = await fetchArea(b);
-    if (!list.length) {
+    const res = await fetchAreaTiles(b);
+    if (!res.list.length) {
       setStage('');
-      toast('Nothing left to import within ' + spanKm(b) + ' km of here — try another area');
+      const why = res.failed === res.tiles
+        ? 'Could not reach the tile server (' + res.failed + '/' + res.tiles + ' tiles failed)'
+        : 'No buildings left to import within ' + spanKm(b) + ' km of here';
+      toast(why + '. Addresses need “Get this area\'s data”.', res.failed ? 'warn' : undefined);
+      if (!res.failed) $('start').classList.add('expanded');
       return;
     }
-    await ingest(list, list.length + ' candidates here');
+    const q = tileQuantCm(b.getCenter().lat, TILE_DATA_Z).toFixed(0);
+    const notes = [];
+    if (res.clipped) notes.push(res.clipped + ' cut by tile edges, skipped');
+    if (res.failed) notes.push(res.failed + ' of ' + res.tiles + ' tiles failed');
+    await ingest(res.list, res.list.length + ' buildings (±' + q + ' cm from tiles)' +
+      (notes.length ? ' · ' + notes.join(' · ') : ''));
   } catch (err) {
     setStage('');
-    // Measured: /sc/* duplicates Access-Control-Allow-Origin on every request
-    // and /josm_data omits it, so a browser cannot fetch either. That makes
-    // this the expected path, not an anomaly — send people to the route that
-    // does work rather than to a diagnostics screen that only confirms it.
-    $('start').classList.add('expanded');
-    toast('The server\'s CORS headers block in-app fetching. Use “Get this area\'s data”, ' +
-      'then paste it or open the saved file.', 'warn');
+    toast('Could not load tiles: ' + classify(err), 'warn');
   }
 }
 
-// quiet is used for the automatic attempt at boot. /random/ answers 500 on
-// every request and its error page carries no CORS header, so the browser
-// reports it as a network failure — meaning a fresh launch would otherwise
-// always greet you with an alarming toast about something you cannot fix.
+// /random/ is not used: it answers 500 on every request and its error page
+// carries no CORS header, so a browser sees only an opaque network failure.
+// buildings_clustered gives the same "somewhere with work" answer, weighted by
+// how much work is there, from a tile that the browser is allowed to read.
+// quiet is for the automatic attempt at boot, so a fresh launch does not open
+// with a warning if the tile server happens to be unreachable.
 async function loadRandom(quiet) {
   setStage('Finding somewhere with work');
   try {
-    const r = await fetchOk(apiBase() + '/random/', { tries: 3, timeout: 15000 });
-    const j = await r.json();
-    map.setView([j.lat, j.lon], 17, { animate: false });
+    const p = await clusterJump();
+    if (!p) throw new Error('no clusters returned');
+    map.setView(p, TILE_DATA_Z, { animate: false });
     await loadArea();
   } catch (err) {
     setStage('');
     if (quiet) return;
-    // Do not key this on err.kind === 'http': a 500 without an
-    // Access-Control-Allow-Origin header reaches us as kind 'network', so the
-    // upstream fault and a genuinely dead connection look identical here.
-    $('start').classList.add('expanded');
-    toast('“Take me somewhere” is broken upstream — /random/ has been returning 500. ' +
-      'Pan to an area and use “Load this area”, or “Get this area\'s data”.', 'warn');
+    toast('Could not find an area: ' + classify(err), 'warn');
   }
 }
 

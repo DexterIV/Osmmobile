@@ -197,8 +197,8 @@ input,select{width:100%;background:var(--ink);border:1px solid var(--line);color
       <button id="randomBtn">Take me somewhere</button>
     </div>
     <div class="startNote">
-      <span id="emptyMsg">Pan to a town, then load. Candidates are sparse — requests cover at
-      least 3 km regardless of zoom.</span>
+      <span id="emptyMsg">Pan to a town and load buildings, or jump to somewhere with work
+      waiting. Requests cover at least 3 km regardless of zoom.</span>
       <button id="moreBtn">⋯</button>
     </div>
     <div class="startMore">
@@ -206,10 +206,12 @@ input,select{width:100%;background:var(--ink);border:1px solid var(--line);color
       <textarea id="pasteBox" placeholder="…then paste the .osm or GeoJSON text here"></textarea>
       <button class="ghost" id="pasteBtn">Load pasted data</button>
       <button class="ghost" id="pickBtn" disabled>Loading…</button>
-      <p><b>Load this area</b> is blocked by the upstream server's CORS headers, not by your
-      network. <b>Get this area's data</b> opens it in a new tab instead, which the browser
-      allows — copy that text back into the box above, or save it and open the file. A response of
-      just <b>&lt;osm version="0.6"/&gt;</b> means nothing is pending there, so pan elsewhere.</p>
+      <p><b>Load this area</b> reads buildings from the vector tiles, whose outlines sit on a
+      ~37 cm grid. <b>Addresses are not in those tiles at all</b> — for addresses, or for exact
+      geometry, use <b>Get this area's data</b>: it opens the server's own export in a new tab,
+      which the browser allows where a direct fetch is refused. Copy that text into the box above,
+      or save it and open the file. A response of just <b>&lt;osm version="0.6"/&gt;</b> means
+      nothing is pending there, so pan elsewhere.</p>
       <p>Keys: <b>A</b> accept, <b>R</b> reject, <b>L</b> later, <b>G</b> auto-fit,
       <b>Z</b> undo, <b>V</b> vertices, arrows nudge.</p>
     </div>
