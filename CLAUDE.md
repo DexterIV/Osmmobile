@@ -388,7 +388,12 @@ Each of these shipped once and was caught by testing:
    the first `index.html` an installed PWA cached was the last one it ever ran. Every deploy after
    that was invisible on the device. The cache name now carries the build hash and the fetch handler
    is stale-while-revalidate.
-7. **The drift pad painting under the tiles.** `#map` had `position:absolute` with no `z-index`, so
+7. **The start panel overlaying the map.** `#start` was absolutely positioned inside `#wrap` at
+   `bottom:10px; right:10px`, i.e. on top of the imagery and in the exact corner the drift pad
+   occupies. It is now a flow element between `#tags` and `#bar`, so the map keeps its full area and
+   grows back into the space when a candidate is showing. Verified with rectangles rather than by
+   eye: at 496x822 the map is 42-603, the panel 645-746, and it overlaps neither the map nor the pad.
+8. **The drift pad painting under the tiles.** `#map` had `position:absolute` with no `z-index`, so
    it created no stacking context and Leaflet's own panes — tilePane 200 up to popupPane 700, plus
    controls at 800 — competed directly with `#map`'s siblings in `#wrap`. Anything without a
    `z-index` of its own, which was `#pad` and `#padTools`, therefore drew *beneath the tiles*.
@@ -396,18 +401,18 @@ Each of these shipped once and was caught by testing:
    pinned to `z-index: 0` so the panes stay contained. This was invisible for the entire project
    until candidates actually loaded, because the pad is only shown when there is one.
    Verified with `elementFromPoint` over each control rather than by eye.
-8. **A permanently disabled file picker.** `shell.html` shipped `#pickBtn` with a hard `disabled`
+9. **A permanently disabled file picker.** `shell.html` shipped `#pickBtn` with a hard `disabled`
    attribute and the label "Loading…", and nothing ever cleared either — `setControls` only touches
    `#pad`, `#padTools` and `#bar`. The file-open route was dead from the first commit and nobody
    noticed, because the button looked like it was still initialising. `bindUI` now enables it.
-9. **Keyboard shortcuts firing while typing.** The `keydown` handler skipped `INPUT` and `SELECT` but
+10. **Keyboard shortcuts firing while typing.** The `keydown` handler skipped `INPUT` and `SELECT` but
    not `TEXTAREA`, so typing in the paste box nudged the outline and an `a` in pasted text accepted
    the candidate. It now also skips `TEXTAREA` and `isContentEditable`, and ignores everything except
    Escape while the tag sheet is open.
-10. **Deleting a tag on a single tap.** Tapping a tag chip used to delete it outright — no
+11. **Deleting a tag on a single tap.** Tapping a tag chip used to delete it outright — no
     confirmation, no undo, and it was the only tag interaction there was. Chips now open the editor,
     and `pushUndo` snapshots tags as well as geometry so `Z` reverts a tag edit.
-11. **Treating a flaky network as blocked CORS.** A dropped request, a 5xx and a missing
+12. **Treating a flaky network as blocked CORS.** A dropped request, a 5xx and a missing
    `Access-Control-Allow-Origin` all surface as the same opaque `fetch` rejection. Conflating them
    latched `pixelMode = 'blocked'` on the first mobile-data blip, which disabled auto-fit for the
    session *and* made every later tile bypass the IndexedDB cache. Missing CORS may only be inferred

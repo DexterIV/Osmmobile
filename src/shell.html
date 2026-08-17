@@ -75,6 +75,9 @@ path.cand{filter:drop-shadow(0 0 4px rgba(255,45,149,.5))}
   background:rgba(18,26,34,.93);color:var(--dim);font-family:var(--mono);font-size:11px;
   backdrop-filter:blur(8px);letter-spacing:.02em}
 #padTools button.on{color:var(--plot);border-color:#5c1240;background:#220d18}
+/* Distinct from the dim tool glyphs: it was easy to miss entirely at the edge
+   of the screen among two grey icons. */
+#idBtn{color:var(--ctx);border-color:#164e5c;background:#0c2028;font-size:13px;letter-spacing:0}
 #padTools button:disabled{opacity:.4}
 
 #tags{flex:0 0 auto;display:flex;gap:6px;padding:8px 10px;overflow-x:auto;
@@ -101,9 +104,14 @@ path.cand{filter:drop-shadow(0 0 4px rgba(255,45,149,.5))}
 #acceptBtn:active{background:#153026}
 
 #empty{display:none}
-#start{position:absolute;left:10px;right:10px;bottom:10px;z-index:500;display:none;
-  flex-direction:column;gap:8px;background:rgba(18,26,34,.95);border:1px solid var(--line);
-  border-radius:12px;padding:10px;backdrop-filter:blur(10px)}
+/* Part of the page, not an overlay on the map. It used to be absolutely
+   positioned inside #wrap, which meant it sat on top of the imagery and crowded
+   the drift pad in exactly the corner the pad occupies. As a flow element the
+   map keeps its whole area, and when a candidate is showing this is hidden and
+   the map grows into the space. */
+#start{flex:0 0 auto;display:none;flex-direction:column;gap:8px;
+  background:var(--panel);border-top:1px solid var(--line);padding:10px;
+  max-height:52vh;overflow-y:auto}
 .startRow{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .startRow button{padding:14px 10px;border-radius:8px;border:1px solid var(--plot);color:var(--plot);
   background:#1a0a12;font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase}
@@ -254,34 +262,35 @@ input,select{width:100%;background:var(--ink);border:1px solid var(--line);color
   <div id="stage"></div>
   <div id="toast"></div>
 
-  <div id="start">
-    <div class="startRow">
-      <button id="loadAreaBtn">Load this area</button>
-      <button id="randomBtn">Take me somewhere</button>
-    </div>
-    <div class="startNote">
-      <span id="emptyMsg">Pan to a town and load buildings, or jump to somewhere with work
-      waiting. Requests cover at least 3 km regardless of zoom.</span>
-      <button id="moreBtn">⋯</button>
-    </div>
-    <div class="startMore">
-      <button class="ghost" id="getDataBtn">Get this area's data ↗</button>
-      <textarea id="pasteBox" placeholder="…then paste the .osm or GeoJSON text here"></textarea>
-      <button class="ghost" id="pasteBtn">Load pasted data</button>
-      <button class="ghost" id="pickBtn" disabled>Loading…</button>
-      <p><b>Load this area</b> reads buildings from the vector tiles, whose outlines sit on a
-      ~37 cm grid. <b>Addresses are not in those tiles at all</b> — for addresses, or for exact
-      geometry, use <b>Get this area's data</b>: it opens the server's own export in a new tab,
-      which the browser allows where a direct fetch is refused. Copy that text into the box above,
-      or save it and open the file. A response of just <b>&lt;osm version="0.6"/&gt;</b> means
-      nothing is pending there, so pan elsewhere.</p>
-      <p>Keys: <b>A</b> accept, <b>R</b> reject, <b>L</b> later, <b>G</b> auto-fit,
-      <b>Z</b> undo, <b>V</b> vertices, <b>E</b> open in iD, arrows nudge.</p>
-    </div>
-  </div>
 </div>
 
 <div id="tags"></div>
+
+<div id="start">
+  <div class="startRow">
+    <button id="loadAreaBtn">Load this area</button>
+    <button id="randomBtn">Take me somewhere</button>
+  </div>
+  <div class="startNote">
+    <span id="emptyMsg">Pan to a town and load buildings, or jump to somewhere with work
+    waiting. Requests cover at least 3 km regardless of zoom.</span>
+    <button id="moreBtn">⋯</button>
+  </div>
+  <div class="startMore">
+    <button class="ghost" id="getDataBtn">Get this area's data ↗</button>
+    <textarea id="pasteBox" placeholder="…then paste the .osm or GeoJSON text here"></textarea>
+    <button class="ghost" id="pasteBtn">Load pasted data</button>
+    <button class="ghost" id="pickBtn" disabled>Loading…</button>
+    <p><b>Load this area</b> reads buildings from the vector tiles, whose outlines sit on a
+    ~37 cm grid. <b>Addresses are not in those tiles at all</b> — for addresses, or for exact
+    geometry, use <b>Get this area's data</b>: it opens the server's own export in a new tab,
+    which the browser allows where a direct fetch is refused. Copy that text into the box above,
+    or save it and open the file. A response of just <b>&lt;osm version="0.6"/&gt;</b> means
+    nothing is pending there, so pan elsewhere.</p>
+    <p>Keys: <b>A</b> accept, <b>R</b> reject, <b>L</b> later, <b>G</b> auto-fit,
+    <b>Z</b> undo, <b>V</b> vertices, <b>E</b> open in iD, arrows nudge.</p>
+  </div>
+</div>
 
 <div id="bar">
   <button id="rejectBtn">Reject<span>not there</span></button>
