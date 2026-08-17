@@ -2139,6 +2139,24 @@ function idEditorUrl(c) {
   return OSM + '/edit?editor=id#' + hash.join('&');
 }
 
+// Google's documented Maps URLs form, not a scraped /maps/@lat,lon,19z/data=…
+// path — the latter encodes the view in an undocumented blob that has changed
+// before. basemap=satellite because a second, usually differently dated aerial
+// image is the point; Street View is one tap away once it is open.
+function googleMapsUrl(c) {
+  const centre = c.kind === 'address' ? c.ring[0] : centroid(c.ring);
+  const z = Math.max(17, Math.min(21, map.getZoom()));
+  return 'https://www.google.com/maps/@?api=1&map_action=map' +
+    '&center=' + centre[0].toFixed(6) + ',' + centre[1].toFixed(6) +
+    '&zoom=' + z.toFixed(0) + '&basemap=satellite';
+}
+
+function openInGoogleMaps() {
+  const c = cur();
+  if (!c) return;
+  window.open(googleMapsUrl(c), '_blank', 'noopener');
+}
+
 function openInId() {
   const c = cur();
   if (!c) return;
@@ -2338,6 +2356,7 @@ function bindUI() {
   $('undoBtn').onclick = undo;
   $('autoBtn').onclick = autoAlign;
   $('idBtn').onclick = openInId;
+  $('gmBtn').onclick = openInGoogleMaps;
   $('vertexToggle').onclick = (e) => {
     e.currentTarget.classList.toggle('on');
     drawVertices();
@@ -2399,6 +2418,7 @@ function bindUI() {
     else if (low === 'g') autoAlign();
     else if (low === 'v') $('vertexToggle').click();
     else if (low === 'e') openInId();
+    else if (low === 'm') openInGoogleMaps();
   });
 
   let sx = 0;

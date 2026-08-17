@@ -77,7 +77,7 @@ path.cand{filter:drop-shadow(0 0 4px rgba(255,45,149,.5))}
 #padTools button.on{color:var(--plot);border-color:#5c1240;background:#220d18}
 /* Distinct from the dim tool glyphs: it was easy to miss entirely at the edge
    of the screen among two grey icons. */
-#idBtn{color:var(--ctx);border-color:#164e5c;background:#0c2028;font-size:13px;letter-spacing:0}
+#idBtn,#gmBtn{color:var(--ctx);border-color:#164e5c;background:#0c2028;font-size:13px;letter-spacing:0}
 #padTools button:disabled{opacity:.4}
 
 #tags{flex:0 0 auto;display:flex;gap:6px;padding:8px 10px;overflow-x:auto;
@@ -242,6 +242,7 @@ input,select{width:100%;background:var(--ink);border:1px solid var(--line);color
 
   <div id="padTools">
     <button id="idBtn" title="Open this spot in the iD editor (new tab)">iD</button>
+    <button id="gmBtn" title="Open this spot in Google Maps satellite (new tab)">GM</button>
     <button id="vertexToggle" title="Edit vertices">◇</button>
     <button id="undoBtn" disabled title="Undo">↶</button>
   </div>
@@ -288,7 +289,7 @@ input,select{width:100%;background:var(--ink);border:1px solid var(--line);color
     or save it and open the file. A response of just <b>&lt;osm version="0.6"/&gt;</b> means
     nothing is pending there, so pan elsewhere.</p>
     <p>Keys: <b>A</b> accept, <b>R</b> reject, <b>L</b> later, <b>G</b> auto-fit,
-    <b>Z</b> undo, <b>V</b> vertices, <b>E</b> open in iD, arrows nudge.</p>
+    <b>Z</b> undo, <b>V</b> vertices, <b>E</b> iD, <b>M</b> Google Maps, arrows nudge.</p>
   </div>
 </div>
 

@@ -29,7 +29,7 @@ works.
 
 ## Keys
 
-`A` accept · `R` reject · `L` later · `G` auto-fit · `Z` undo · `V` toggle vertices · `E` open in iD · arrows nudge.
+`A` accept · `R` reject · `L` later · `G` auto-fit · `Z` undo · `V` toggle vertices · `E` open in iD · `M` open in Google Maps · arrows nudge.
 
 ## Build
 
