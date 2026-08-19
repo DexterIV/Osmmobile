@@ -150,6 +150,31 @@ Verified in a browser: a cell loads in ~190 ms with 47 footprints, a candidate c
 footprint reads `covered by an OSM building`, the duplicate check reports `5 already in OSM here`,
 and 53 dashed footprints plus house-number labels draw on screen.
 
+### What you have already accepted is drawn too
+
+Accepted objects are not in OSM yet, so they are absent from the `/map` cell that supplies the cyan
+footprints, and nothing drew them: the only way to notice that a candidate overlapped one you accepted a
+moment ago was to remember it. Reported as *"when adding buildings i cant see previously added building
+on a map so i can get overlaying"*.
+
+Queued objects within 250 m of the candidate are now drawn in **ochre** (`#e0a326`, dashed `6,2`),
+distinct from the pink candidate and the cyan OSM footprints, and `queuedShapes` is kept in step by
+`refreshQueueBadge`, which already runs after every verdict, after a drop from the review sheet, after an
+upload and at boot.
+
+They also feed `overlapVerdict`, which took a `{ways:[{ring,hn}]}` cell and so needed only a label
+parameter to report *"covered by a building you already accepted"* instead of *"an OSM building"*. That
+check runs **last**, so it wins the label: overlapping something you accepted a moment ago is a mistake
+you can still fix, where overlapping OSM may be a considered decision. It also does not depend on the
+`/map` cell, so it still reports while that is loading or after it has failed.
+
+Verified with three ingested candidates: the first reads `clear` with nothing queued; the second, which
+overlaps it, reads `overlap` with one ochre polygon on the map and *"covered by a building you already
+accepted"*; the third, 1.2 km away, draws no ochre at all.
+
+**Land-cover areas are drawn but excluded from the check**, for the reason `overlapVerdict` already skips
+them — a farmland parcel containing a barn is not a duplicate of the barn.
+
 ## Provenance and staleness — why demolished buildings are still in the data
 
 The candidates are **BDOT10k** (GUGiK's 1:10 000 topographic database) for buildings and **PRG** for
@@ -400,6 +425,53 @@ The IndexedDB cache is keyed on the full tile URL. Leaflet's WMS `getTileUrl` de
 tile coords, so the key is stable for the same z/x/y — but it changes when the *map size* changes,
 because a different size covers a different set of coords. A cache test that does not pin the view and
 let `invalidateSize` settle first will measure zero hits and be wrong about it.
+
+### Truncated bodies, and why the cache had to be purged once
+
+Reported as *"now instead of black tiles i see white only tiles"*, immediately after the pipeline above
+shipped, and resolved on the reporter's device by clearing the cache. That last detail is the whole
+diagnosis.
+
+The source drops 12–17 % of connections **mid-body** and answers with `Transfer-Encoding: chunked` and
+no `Content-Length`, so a dropped connection delivers a **200 whose JPEG simply stops early**. A browser
+fires `load` for that — it decodes the rows it received and fills the rest — so nothing downstream could
+tell the difference, the body went into the tile cache, and it was served from there for the rest of the
+TTL. It only became visible once the fetch path started succeeding often enough to cache anything at
+all: before, tiles mostly failed outright and you saw the dark `#map` background.
+
+`imageBlobOk` now checks that the bytes contain a whole image: a complete JPEG ends with the
+end-of-image marker `FFD9`, a complete PNG with an `IEND` chunk. Both are definitive where size and
+decoded dimensions are not — **a truncated JPEG still reports the full width and height from its
+header.** Verified against five real GUGiK tiles across four locations and four zooms: all `ffd8…ffd9`,
+so complete imagery is never rejected.
+
+Three things follow, and the second was only found by measuring:
+
+- A truncated body is **not cached**, and cached entries are re-checked on read as well as on write, so
+  anything stored by an earlier build is dropped the first time it is touched.
+- It is also **not painted**, and the reason is not obvious: rejecting it on the fetch path alone simply
+  handed the same URL to the `<img>` fallback, which cannot inspect what it received and painted it
+  anyway. Measured 9 bodies rejected and then 21 painted, 12 visible partial tiles. A tile that is half
+  imagery and half fill is worse than a blank one here — the entire point of the app is judging a
+  building against what is on the ground, and a partial tile invites a verdict over ground that was
+  never seen. So it goes blank and `healTile` asks again.
+- `healOnce` prefers the cors fetch over a plain `<img>` wherever the source supports one, because only
+  the fetch can see whether the body was complete. Healing was the last path that would otherwise still
+  paint a partial tile.
+
+Measured against a stub serving a real GUGiK JPEG cut to 40 %: `paintedCls: 0`, `visible: 0`,
+`cachedEntries: 0`, 30 bodies rejected — and the flaky-503 stub still heals 9 of 9, and the cache still
+goes 6 stored cold → 6 hits and 0 requests warm.
+
+**A truncated JPEG renders black in Chromium, not white** — measured: top rows real imagery, everything
+below `[0,0,0]`. So the reported white was engine-specific (the device was not Chromium-on-desktop) and
+that particular appearance was never reproduced here. What *was* reproduced is the cause: partial bodies
+being cached and painted. Do not go looking for a white-coloured bug in this repo; look for a partial
+image.
+
+`S.tilesChecked` purges the tile store once on upgrade, in the same shape as `S.offProxy`, because a
+build that starts checking bodies cannot vouch for any stored by a build that did not. Rejection on read
+alone would leave the first view of every poisoned tile blank.
 
 ### Blank tiles heal themselves
 
@@ -725,6 +797,18 @@ Each of these shipped once and was caught by testing:
    not stable. A `ResizeObserver` on `#map` fixes the tiling, but a *synchronous* `syncMapSize()` is
    still needed in `fitShape()`, because `ingest` hides the panel and re-fits inside one task while the
    observer only runs a frame later.
+
+18. **Trusting a 200 to contain a whole image.** The imagery source drops 12-17 % of connections
+   mid-body and sends `Transfer-Encoding: chunked` with no `Content-Length`, so a dropped connection
+   delivers a 200 whose JPEG stops early. A browser fires `load` for it, decoding the rows it got and
+   filling the rest, and **a truncated JPEG still reports the full width and height from its header** —
+   so neither `load`, nor `naturalWidth`, nor the byte count can detect it. Those bodies were cached and
+   served for the rest of the TTL. Check the format's terminator instead (`FFD9` for JPEG, `IEND` for
+   PNG), reject on read as well as on write, and do not let the `<img>` fallback quietly paint the same
+   bytes the fetch path just refused — measured 9 rejected and then 21 painted.
+19. **A cache purge that purges nothing visible.** Emptying the `tiles` store changes nothing on screen
+   until something happens to re-request a tile, so the button appeared to do nothing — and this button
+   exists precisely for when what is on screen is wrong. It rebuilds the imagery layer now.
 
 **Amendment to #12, measured 2026-08-19.** The rule above is right but was **insufficient at the tile
 level.** A connection dropped mid-flight is `network`-shaped, and the `<img>` retry right after it

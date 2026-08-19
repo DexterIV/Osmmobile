@@ -40,6 +40,10 @@ const DEF = {
   // Set once the one-time move off orto-proxy has happened, so choosing it
   // again by hand is respected rather than silently undone on every launch.
   offProxy: false,
+  // Set once the tile cache has been purged of bodies stored before the build
+  // that started checking them for completeness. Same shape as offProxy: a
+  // one-time migration that must not repeat on every launch.
+  tilesChecked: false,
 };
 
 const PRESETS = {
@@ -1336,7 +1340,7 @@ let probeToken = 0;
 // heal/healed are counted apart from net/tiles on purpose: folding a repair
 // into either would make 'requests per tile' read healthy exactly when a
 // screenful is costing double, and that ratio is how this branch is judged.
-const tileStats = { tiles: 0, cache: 0, fetch: 0, img: 0, blank: 0, cancel: 0, net: 0, ms: 0, n: 0, heal: 0, healed: 0 };
+const tileStats = { tiles: 0, cache: 0, fetch: 0, img: 0, blank: 0, cancel: 0, net: 0, ms: 0, n: 0, heal: 0, healed: 0, truncated: 0 };
 function tileStatsLine() {
   const s = tileStats;
   const per = s.tiles ? (s.net / s.tiles).toFixed(2) : '0';
@@ -1344,7 +1348,8 @@ function tileStatsLine() {
   return s.tiles + ' tiles, ' + s.net + ' requests (' + per + '/tile), ' +
     s.cache + ' from cache, ' + s.fetch + ' by fetch, ' + s.img + ' by <img>, ' +
     s.blank + ' blank, ' + s.cancel + ' cancelled, ' + avg + ' ms mean, path=' + tilePath +
-    (s.heal ? '; healing spent ' + s.heal + ' requests and recovered ' + s.healed : '');
+    (s.heal ? '; healing spent ' + s.heal + ' requests and recovered ' + s.healed : '') +
+    (s.truncated ? '; ' + s.truncated + ' truncated bodies rejected' : '');
 }
 
 // An <img> has no AbortController, so the timeout cancels by pointing src at a
@@ -1380,6 +1385,41 @@ function loadImg(img, url, ms) {
 }
 
 const imgLoads = (url, ms) => loadImg(new Image(), url, ms).then(() => true, () => false);
+
+// Does this body actually contain a whole image?
+//
+// This exists because of a measured property of the source, not out of caution.
+// It drops 12-17% of connections mid-body and answers with `Transfer-Encoding:
+// chunked` and no Content-Length, so a dropped connection can deliver a 200 whose
+// JPEG simply stops early. A browser fires `load` for that — it decodes the rows
+// it received and fills the rest with WHITE — so nothing downstream can tell the
+// difference, and the truncated body goes into the tile cache and is served from
+// there until the TTL expires. Reported as "instead of black tiles i see white
+// only tiles", and it only appeared once the fetch path started succeeding often
+// enough to cache anything.
+//
+// A complete JPEG ends with the end-of-image marker FFD9 and a complete PNG with
+// an IEND chunk. Both are cheap to check on the last few bytes and both are
+// definitive, where size and decoded dimensions are not: a truncated JPEG still
+// reports the full width and height from its header.
+async function imageBlobOk(b) {
+  if (!b || !b.size || !b.type || !b.type.startsWith('image/')) return false;
+  const tailLen = Math.min(16, b.size);
+  const tail = new Uint8Array(await b.slice(b.size - tailLen).arrayBuffer());
+  if (b.type === 'image/jpeg' || b.type === 'image/jpg') {
+    return tail[tailLen - 2] === 0xff && tail[tailLen - 1] === 0xd9;
+  }
+  if (b.type === 'image/png') {
+    // ...IEND then its 4-byte CRC.
+    for (let i = 0; i + 3 < tailLen; i++) {
+      if (tail[i] === 0x49 && tail[i + 1] === 0x45 && tail[i + 2] === 0x4e && tail[i + 3] === 0x44) return true;
+    }
+    return false;
+  }
+  // An unrecognised image type is taken at its word rather than rejected, so a
+  // source serving webp or avif keeps working.
+  return true;
+}
 
 // One request per source selection, never per tile.
 //
@@ -1570,6 +1610,15 @@ function tileCacheMixin(Base) {
         if (S.tileTTLdays > 0) {
           const hit = await dbGet('tiles', url).catch(() => null);
           if (gone()) return;
+          // imageBlobOk on the way out as well as the way in, so an entry stored
+          // by an earlier build — which did not check — is dropped the first time
+          // it is read rather than shown white until its TTL runs out.
+          if (hit && hit.blob && Date.now() - hit.t < S.tileTTLdays * 86400e3 && !await imageBlobOk(hit.blob)) {
+            tileStats.truncated++;
+            dbDel('tiles', url);
+            hit.blob = null;
+          }
+          if (gone()) return;
           if (hit && hit.blob && Date.now() - hit.t < S.tileTTLdays * 86400e3) {
             try { await useBlob(hit.blob); tileStats.cache++; return finish(); } catch (_) {
               if (gone()) return;
@@ -1593,8 +1642,28 @@ function tileCacheMixin(Base) {
             });
             const b = await r.blob();
             if (gone()) return;
-            if (S.tileTTLdays > 0) dbPut('tiles', url, { blob: b, t: Date.now() }).catch(() => {});
+            // A truncated body must not be painted and must never be cached. It
+            // would render its missing rows white and then be served from the
+            // cache that way for days.
+            if (!await imageBlobOk(b)) {
+              if (gone()) return;
+              tileStats.truncated++;
+              // Do NOT fall through to the <img> path. It would request the same
+              // URL and paint the same partial bytes, because an <img> cannot
+              // inspect what it received — measured: 9 bodies rejected here and
+              // then 21 painted below, 12 visible partial tiles. A tile that is
+              // half imagery and half fill is worse than a blank one: the whole
+              // point of this app is judging a building against what is actually
+              // on the ground, and a partial tile invites a verdict over a region
+              // that was never seen. Blank, and let healTile ask again in a few
+              // seconds, by which time the connection has usually recovered —
+              // which is exactly what the burst measurements predict.
+              return finish(new Error('incomplete image body'));
+            }
             await useBlob(b);
+            // Cached only now that it has provably decoded. Storing before the
+            // decode meant a body that failed to render was still in the cache.
+            if (S.tileTTLdays > 0) dbPut('tiles', url, { blob: b, t: Date.now() }).catch(() => {});
             tileFetchMisses = 0;
             tilePath = 'fetch';
             tileStats.fetch++;
@@ -1689,17 +1758,43 @@ function revokeTile(el) {
 //     class arrives, so a repaired tile has to be revealed here. Re-calling
 //     done() would not do it (_tileReady bails while src is the gif) and would
 //     fire a second, spurious tileerror.
-//   * <img> only, never the cors fetch, so a healed tile is not cached and
-//     costs a fresh download if you pan back to it. That is the right trade:
-//     nine blank tiles retried through the fetch path are nine CONSECUTIVE
-//     failures, tileFetchMisses latches tilePath to 'img' at six, and that latch
-//     was measured costing a session its entire tile cache. A retry of a
-//     known-bad tile is not evidence about the source, so it must not vote.
+//   * healOnce, not loadImg directly. It prefers the cors fetch where that source
+//     supports one, because only the fetch can check the body for completeness,
+//     and it never lets the attempt vote on tileFetchMisses — a retry of a
+//     known-bad tile is not evidence about the source, and letting nine blank
+//     tiles vote latches tilePath to 'img' at six, which was measured costing a
+//     session its entire tile cache.
 //   * gone() is re-checked after every await, including after a successful load:
 //     _abort() cancels by pointing src at the gif, which fires `load`, so a
 //     cancelled tile can resolve loadImg looking like a success.
 // Nothing here reads a status or infers anything at all about CORS, so
 // pixelMode stays reachable only from probeImagery (regression 12).
+// One heal attempt. Where a cors fetch can obtain an image, heal through it
+// rather than through a plain <img>, because only the fetch can see whether the
+// body it received was complete — an <img> paints whatever arrived, which is the
+// fault imageBlobOk exists to stop, and healing is the one path that would
+// otherwise still reintroduce it.
+//
+// It must still not vote on tileFetchMisses: a retry of a tile already known to
+// have failed is not evidence about the source, and letting it vote was measured
+// costing a session its entire tile cache. So the counter is deliberately left
+// alone here, in both directions.
+async function healOnce(img, url) {
+  if (tilePath === 'img') return loadImg(img, url, TILE_IMG_TIMEOUT);
+  const r = await fetchOk(url, {
+    mode: 'cors', tries: 1, timeout: TILE_FETCH_TIMEOUT, retryOn: transientImagery,
+  });
+  const b = await r.blob();
+  if (!await imageBlobOk(b)) {
+    tileStats.truncated++;
+    throw new Error('incomplete image body');
+  }
+  revokeTile(img);
+  img._blob = URL.createObjectURL(b);
+  await loadImg(img, img._blob, TILE_IMG_TIMEOUT);
+  if (S.tileTTLdays > 0) dbPut('tiles', url, { blob: b, t: Date.now() }).catch(() => {});
+}
+
 async function healTile(img, url, gone) {
   // A cache hit whose blob then failed to decode leaves that object URL on the
   // element, and _abort only revokes it when the tile is finally pruned. Holding
@@ -1723,7 +1818,7 @@ async function healTile(img, url, gone) {
     i++;
     tileStats.heal++;
     try {
-      await loadImg(img, url, TILE_IMG_TIMEOUT);
+      await healOnce(img, url);
       if (gone()) return;
       L.DomUtil.addClass(img, 'leaflet-tile-loaded');
       tileStats.healed++;
@@ -2119,8 +2214,9 @@ function ringCentroidSimple(ring) {
 // Verdict from real geometry rather than centroid distance. Containment either
 // way counts as an overlap: a candidate drawn inside an existing footprint is a
 // duplicate, and so is an existing building sitting inside the candidate.
-function overlapVerdict(c, cell) {
+function overlapVerdict(c, cell, what) {
   if (!cell || !cell.ways.length) return null;
+  const it = what || 'an OSM building';
   // Land cover legitimately contains buildings — a farmland parcel with a barn in
   // it is not a duplicate of the barn. Judging areas against building footprints
   // would flag essentially every field, so it is skipped. Comparing against
@@ -2129,13 +2225,13 @@ function overlapVerdict(c, cell) {
   for (const w of cell.ways) {
     if (c.kind === 'address') {
       if (pointInRing(c.ring[0], w.ring)) {
-        return { tier: 2, why: w.hn ? 'inside OSM building ' + w.hn : 'inside an OSM building' };
+        return { tier: 2, why: w.hn ? 'inside ' + it + ' ' + w.hn : 'inside ' + it };
       }
       continue;
     }
-    if (pointInRing(ringCentroidSimple(c.ring), w.ring)) return { tier: 2, why: 'covered by an OSM building' };
-    if (pointInRing(ringCentroidSimple(w.ring), c.ring)) return { tier: 2, why: 'contains an OSM building' };
-    for (const v of c.ring) if (pointInRing(v, w.ring)) return { tier: 2, why: 'overlaps an OSM building' };
+    if (pointInRing(ringCentroidSimple(c.ring), w.ring)) return { tier: 2, why: 'covered by ' + it };
+    if (pointInRing(ringCentroidSimple(w.ring), c.ring)) return { tier: 2, why: 'contains ' + it };
+    for (const v of c.ring) if (pointInRing(v, w.ring)) return { tier: 2, why: 'overlaps ' + it };
   }
   return { tier: null, why: '' };
 }
@@ -2163,6 +2259,21 @@ function duplicateAddress(c, cell) {
   return '';
 }
 
+// Accepted objects near this candidate, shaped like a ctx cell so overlapVerdict
+// takes it without changes. Excludes the candidate itself, which matters after an
+// undo: the object can be back under review while its queue entry still exists.
+function queuedNear(c) {
+  const centre = c.kind === 'address' ? c.ring[0] : c.centroid;
+  const ways = [];
+  for (const q of queuedShapes) {
+    if (q.key === c.key) continue;
+    if (q.kind === 'area') continue;
+    if (metresBetween(centre, ringCentroidSimple(q.ring)) > 200) continue;
+    ways.push({ ring: q.ring, hn: q.hn });
+  }
+  return { ways, addrs: [] };
+}
+
 function drawContext() {
   ctxLayer.clearLayers();
   const c = cur();
@@ -2176,6 +2287,19 @@ function drawContext() {
     L.circleMarker([la, lo], {
       radius: 3, color: '#22d3ee', weight: 1, opacity: 0.5,
       fillOpacity: 0.2, fillColor: '#22d3ee', interactive: false,
+    }).addTo(ctxLayer);
+  }
+
+  // Everything already accepted this session, in ochre. Without this the only way
+  // to notice that a candidate overlaps one you accepted a moment ago was to
+  // remember it: accepted objects are not in OSM yet, so they are absent from the
+  // /map cell that supplies the cyan footprints, and nothing else drew them.
+  for (const q of queuedShapes) {
+    if (q.key === cur().key) continue;
+    if (metresBetween(centre, ringCentroidSimple(q.ring)) > 250) continue;
+    L.polygon(q.holes.length ? [q.ring, ...q.holes] : q.ring, {
+      color: '#e0a326', weight: 2, dashArray: '6,2',
+      fillColor: '#e0a326', fillOpacity: 0.12, interactive: false,
     }).addTo(ctxLayer);
   }
 
@@ -2238,6 +2362,12 @@ function paintChrome() {
       if (dup) { tier = 2; note = dup; }
     } else if (cell === 'loading') note = 'checking OSM…';
     else if (cell === 'failed') note = 'OSM check failed';
+    // Checked last so it wins the label: overlapping something you accepted a
+    // moment ago is a mistake you can still fix, where overlapping OSM might be a
+    // considered decision. This check does not depend on the /map cell at all, so
+    // it still reports while that is loading or after it has failed.
+    const q = overlapVerdict(c, queuedNear(c), 'a building you already accepted');
+    if (q && q.tier !== null) { tier = q.tier; note = q.why; }
   }
   $('tier').textContent = ['clear', 'near', 'overlap'][tier];
   $('tier').className = 'tier t' + tier;
@@ -2535,8 +2665,21 @@ async function verdict(kind) {
   show();
 }
 
+// Geometry of everything accepted but not yet uploaded. Held in memory because
+// drawContext runs on every candidate and must not wait on IndexedDB, and kept in
+// step here because refreshQueueBadge already runs after every verdict, after a
+// drop from the review sheet, after an upload and at boot.
+let queuedShapes = [];
+
 async function refreshQueueBadge() {
   const q = await dbAll('queue');
+  queuedShapes = q
+    .filter((e) => e.val && Array.isArray(e.val.ring) && e.val.ring.length >= 3)
+    .map((e) => ({
+      key: e.key, kind: e.val.kind, ring: e.val.ring,
+      holes: e.val.holes || [],
+      hn: (e.val.tags && e.val.tags['addr:housenumber']) || '',
+    }));
   $('upCount').textContent = q.length;
   $('uploadBtn').disabled = !q.length;
 }
@@ -3153,7 +3296,19 @@ function bindUI() {
   $('queueUpload').onclick = uploadQueue;
   $('queueSheet').onclick = (e) => { if (e.target === $('queueSheet')) closeQueueSheet(); };
   $('clearTiles').onclick = async () => {
-    await dbClear('tiles'); await dbClear('ctx'); paintSettings(); toast('Cache cleared');
+    const before = await cacheStats().catch(() => ({ tiles: 0, ctx: 0 }));
+    await dbClear('tiles');
+    await dbClear('ctx');
+    ctxCells.clear();
+    // Rebuilding the layer is what makes the purge visible. Emptying the store on
+    // its own changes nothing on screen until something happens to re-request a
+    // tile, which made the button look like it had done nothing — and this button
+    // exists precisely for when what is on screen is wrong.
+    makeImagery();
+    paintSettings();
+    if (cur()) { drawContext(); paintChrome(); }
+    toast('Cleared ' + before.tiles + ' tiles and ' + before.ctx +
+      ' context sets, and refetching what is on screen');
   };
   $('clearDecisions').onclick = async () => {
     if (!confirm('Forget every accept/reject/later decision?')) return;
@@ -3212,6 +3367,18 @@ function bindUI() {
     S.offProxy = true;
     await dbPut('kv', 'settings', S).catch(() => {});
     migrated = true;
+  }
+
+  // Earlier builds cached whatever the fetch returned without checking that it
+  // was a whole image, and the source truncates about one body in seven. Those
+  // entries render their missing rows white and would be served from the cache
+  // for the rest of the TTL, so the arriving build cannot vouch for any of them.
+  // imageBlobOk now rejects them on read as well, but that leaves the first view
+  // of each one white; purging once is a few seconds of refetching instead.
+  if (!S.tilesChecked) {
+    await dbClear('tiles').catch(() => {});
+    S.tilesChecked = true;
+    await dbPut('kv', 'settings', S).catch(() => {});
   }
 
   await initWasm();
