@@ -159,6 +159,26 @@ await t('onAttempt reports each failed try', async () => {
   assert.deepEqual(notes, ['1:HTTP 500', '2:HTTP 500']);
 });
 
+// probeImagery needs to know that a CORS rejection happened even when a later
+// attempt failed a different way, because only the last attempt's kind reaches
+// the thrown error. The budynki proxy fails both ways within one probe.
+await t('onAttempt reports the kind of every attempt, not just the last', async () => {
+  const kinds = [];
+  let n = 0;
+  const { fetchRetry } = load(async () => {
+    n++;
+    if (n === 1) throw new TypeError('Failed to fetch');
+    return res(404);
+  });
+  const err = await fetchRetry('u', {
+    tries: 3, retryOn: (st) => st === 404 || st >= 500,
+    onAttempt: (i, m, kind) => kinds.push(kind),
+  }).then((r) => ({ kind: 'http', status: r.status }), (e) => e);
+  assert.deepEqual(kinds, ['network', 'http'], 'both kinds are reported');
+  assert.equal(err.status ?? err.kind, 404, 'the last attempt is what surfaces');
+  assert.ok(kinds.includes('network'), 'the network-shaped attempt is not masked');
+});
+
 // --- backoff shape --------------------------------------------------------
 await t('backoff grows and is capped', async () => {
   const { backoff } = load(async () => res(200));

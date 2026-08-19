@@ -88,7 +88,14 @@ path.cand{filter:drop-shadow(0 0 4px rgba(255,45,149,.5))}
 #idBtn,#gmBtn{color:var(--ctx);border-color:#164e5c;background:#0c2028;font-size:13px;letter-spacing:0}
 #padTools button:disabled{opacity:.4}
 
-#tags{flex:0 0 auto;display:flex;gap:6px;padding:8px 10px;overflow-x:auto;
+/* min-height pins the one layout change that happens on every candidate. #tags
+   is a flex sibling of the map, so growing from empty (17px) to one chip row
+   (42px) shrinks the map, and Leaflet only re-measures when told to. The
+   ResizeObserver in watchMapSize covers it either way; this just avoids the
+   reflow. 42px was measured with one chip present via
+   $('tags').getBoundingClientRect().height at 496x822 — re-measure it rather
+   than recomputing it by hand if the chip metrics change. */
+#tags{flex:0 0 auto;display:flex;gap:6px;padding:8px 10px;overflow-x:auto;min-height:42px;box-sizing:border-box;
   background:var(--panel);border-top:1px solid var(--line);scrollbar-width:none}
 #tags::-webkit-scrollbar{display:none}
 .chip{flex:0 0 auto;border:1px solid var(--line);background:var(--panel2);color:var(--text);

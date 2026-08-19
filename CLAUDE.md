@@ -309,6 +309,169 @@ the app disables auto-fit and falls back to the manual drift pad.
 > Tiles still *draw* through the proxy, because a plain `<img>` performs no CORS check at all, which
 > is why this went unnoticed: the map looked fine while the cache and auto-fit were dead.
 
+## Imagery transport, measured 2026-08-19
+
+Everything here was measured **from a wired datacentre link, not a phone**, against `orto-high` =
+`https://mapy.geoportal.gov.pl/wss/service/PZGIK/ORTO/WMS/HighResolution`. A phone on mobile data will
+be worse. Re-derive the constants on a real device before treating any of them as settled.
+
+| fact | measurement | why it decides the design |
+|---|---|---|
+| **HTTP/1.1 only** | every response `HTTP/1.1 200`; no h2, no ALPN upgrade. `budynki` by contrast answers HTTP/2 with `alt-svc: h3` | the browser caps this origin at **6 connections**, and `fetch` and `<img>` share that one pool. **Requests, not bytes, are the scarce resource** |
+| **No caching headers at all** | `Access-Control-Allow-Origin`, `Access-Control-Allow-Credentials`, `Vary: Origin`, `Content-Type`, `Date`, two `Set-Cookie`, `Transfer-Encoding: chunked`. **No `Cache-Control`, no `Expires`, no `ETag`, no `Last-Modified`** | zero freshness lifetime and no validator, so **every request is a real download** and the browser's own HTTP cache can never help. This is what rules out "paint from `<img>`, then fetch the same URL to fill the cache" — that is two downloads of the same bytes |
+| CORS is clean and echoes the Origin | `Access-Control-Allow-Origin: https://dexteriv.github.io` plus `Vary: Origin`, exactly one header | a credential-less `fetch(mode:'cors')` does work here, so one request can both paint and fill the cache |
+| **TTFB is seconds** | 256×256 GetMap: 1.0 / 1.5 / 1.6 / 1.6 / 1.8 / 2.0 / 2.1 / 2.5 / 2.5 / 2.8 / 4.0 / 4.2 / 5.7 / 6.9 / 8.6 s. Mean 1.13 s over 20 successes at concurrency 6 | the old 12 000 ms tile timeout was only ~1.4× the worst observed *success*, so on mobile data it was crossed routinely |
+| **12–17 % of requests are dropped mid-connection** | 24 @ P6 → 20 ok; 12 @ P6 → 10 ok; 12 @ P2 → 11 ok. The failures are `TLS unexpected EOF` / `Connection reset` — **fast**, not timeouts | in a browser a reset arrives as `TypeError: Failed to fetch`, i.e. `kind: 'network'`, which is indistinguishable from a missing CORS header at the level of one request. See the amendment to regression #12 |
+| **Bursts are cut off, then recover** | five back-to-back requests were dropped **5/5** with zero bytes after 15 s; the same URLs succeeded **7/8** minutes later when spaced out | **this settles the old open question: the flakiness is load dependent.** Piling retries on is self-harm, and a *deferred, spaced* retry is the only kind worth making |
+| Higher concurrency is *better* | 12 tiles @ P6 = 6.9 s wall; 12 @ P2 = 6.5 s but half the parallelism idle; 24 @ P6 = 4.5 s | **do not add an app-level concurrency limiter.** Let the browser's six do their job; the fix is to stop handing them junk |
+| `MaxWidth`/`MaxHeight` = 4096 | `GetCapabilities` | `tileSize: 512` would be legal. It is **deliberately not used** — see below |
+
+The two `Set-Cookie`s (one is an F5 BIG-IP ASM cookie) are both `SameSite`-unspecified, hence `Lax`,
+hence never sent on a cross-site subresource — so every tile looks like a new session to that WAF
+whichever path it takes. That is a **plausible mechanism** for the burst cut-off and nothing more; it
+was not measured, and no client-side header trick could earn a session anyway.
+
+### One request per tile
+
+The pipeline was: IndexedDB read → `fetch(mode:'cors', tries:2, timeout:12000)` → and *only if that
+failed* the plain `<img>` that actually paints. So `img.src` was assigned at least one full round trip
+late and up to **24.5 s** late, six connections deep in aborted fetches. Worse, its escape hatch could
+not arm: it keyed on `err.kind === 'network'`, but a hung server yields `'timeout'`, so `pixelMode`
+never latched and **every tile paid the full 24.5 s indefinitely, with no self-correction.**
+
+Measured in a headless browser on a cold cache, nine tiles, before and after:
+
+| | old | new |
+|---|---|---|
+| tiles painted at t = 2 / 5 / 10 / 20 / 30 s | **0 / 0 / 0 / 0 / 0** | 1 / 5 / 8 / 9 / 9 (bad moment) · **9 / 9 / 9 / 9 / 9** (normal) |
+| median `createTile` → first `src` | **24 341 ms** | 704–910 ms, i.e. server TTFB |
+| GetMap requests for 9 tiles | **77** (8.56 per tile) | 9–13 (**1.00–1.44** per tile) |
+| `imgLayer.isLoading()` at t = 30 s | **still `true`** | `false` |
+
+The old build is **bimodal**, which is exactly why the report was "*often* when I jump to a new area":
+when the cors fetch happened to succeed first try it was fine (14 requests, 9/9 painted by 10 s), and
+when it did not it collapsed. The new pipeline is not bimodal.
+
+Three restructurings were weighed; the header dump and the connection cap pick the winner:
+
+- **Hedging the `<img>` behind a ~1 s head start** — rejected. Median TTFB is 1.0–2.5 s so the hedge
+  would fire on most tiles, both requests contend for the same six slots, and with no `Cache-Control`
+  the loser is pure waste rather than a warm cache.
+- **`<img>` first, background cache-fill `fetch`** — rejected by the absent caching headers: a second
+  real download of every tile, on the origin where requests are the constraint.
+- **A one-shot per-source capability probe** — chosen. One extra request per *source selection*, never
+  per tile, so a tile takes exactly one path.
+
+`img.crossOrigin` stays unset. The premise that would justify it (a cheap cache-hit follow-up) is
+false here, and it would turn the one path that performs **no CORS check at all** — the only path that
+works through `orto-proxy` — into one that fails on a header mismatch. Keeping the `<img>` maximally
+dumb is the point. The one design where `crossOrigin` earns its place is caching via `canvas.toBlob()`
+from the single painting request on a proven-clean source; nothing reads pixels back out of the `tiles`
+store, so a JPEG re-encode there would be acceptable. Not implemented.
+
+The cost accepted in exchange: `fetch` + `r.blob()` buffers the whole body before a pixel appears, so
+the browser's progressive JPEG decode is forfeited on the cache-filling path. At 1–8 s TTFB against a
+~20 KB body, TTFB dominates and the loss is small.
+
+**`tileSize: 512` is deliberately not used**, though it is legal and would quarter the request count.
+The rewritten pipeline already measures 1.00 requests per tile, so the win is now marginal; the 512
+evidence is n=1 (one success in three attempts); it would orphan every 256-keyed cache entry until TTL
+eviction; and against a burst-throttler a larger render may cost more *server time* per request, which
+is the resource actually under pressure. Revisit only with a real per-tile server-time measurement.
+
+### Constants, and why those numbers
+
+`TILE_FETCH_TIMEOUT` 6 000 ms — clear of the 95th-percentile success while capping what one hung tile
+costs a connection. The cors fetch runs `tries: 1`; the retry belongs on the `<img>`, where it is both
+cheaper and independent of CORS. `TILE_IMG_TIMEOUT` 8 000 ms, because an `<img>` has no
+`AbortController` and previously waited out the OS TCP timeout. `TILE_IMG_TRIES` 3 with
+`backoff(i-1, 300, 1500)`, and the whole loop bounded by `TILE_DEADLINE` 15 000 ms — a blank tile now
+beats a connection still tied up when the next screenful arrives.
+
+`TILE_FETCH_GIVEUP` 6 consecutive cors-fetch failures routes tiles straight to `<img>`;
+`TILE_FETCH_REARM` 24 img-served tiles routes them back. **The re-arm is not decoration.** At a
+give-up of 4 and no re-arm, a cold boot's 30-tile burst tripped the latch against a source whose CORS
+headers are perfect — because the server throttles bursts, so consecutive failures cluster exactly
+there — and the session then lost its **entire tile cache**: 21 tiles painted by `<img>`, 0 cached.
+Verified after the fix, network-free against a local stub: 9 tiles cold = 9 requests and 9 stored, then
+the same view warm = **9 cache hits, 0 requests, store unchanged**.
+
+The IndexedDB cache is keyed on the full tile URL. Leaflet's WMS `getTileUrl` derives `BBOX` from the
+tile coords, so the key is stable for the same z/x/y — but it changes when the *map size* changes,
+because a different size covers a different set of coords. A cache test that does not pin the view and
+let `invalidateSize` settle first will measure zero hits and be wrong about it.
+
+### Blank tiles heal themselves
+
+A tile that spent its attempts used to stay blank until the user panned or zoomed — reported as *"i had
+to do sth so it retries"*. Isolated against a stub that answers on the seventh request: **90 seconds of
+sitting perfectly still produced not one further request, and 12 of 12 tiles stayed blank.** The app
+stopped asking.
+
+`healTile` keeps trying afterwards, on a schedule the same measurements dictate: five back-to-back
+requests were dropped 5/5 while the identical URLs answered 7/8 minutes later when spaced, so this
+origin recovers with **time, not pressure**. Four slots at 6 s doubling to a 60 s cap, each jittered
+±30% by `backoff`, put the first attempt 4–8 s after the tile gave up and the last 1–2 minutes after. A
+schedule that finished inside 30 s would never sample a recovered server.
+
+Measured against the same stub, sitting still:
+
+| at idle+90 s | before | after |
+|---|---|---|
+| blank tiles | **12 / 12** | 1 / 9 |
+| painted | **0** | 8 |
+| requests after the pipeline gave up | **0, frozen** | 71 (~4 per tile) |
+| tiles recovered | 0 | **20** |
+
+Four details are load-bearing, and each is a trap someone will otherwise walk into again:
+
+- **The re-attempt reveals the tile itself.** Leaflet adds `leaflet-tile-loaded` at exactly one line and
+  only when the tile did not error, and `.leaflet-tile` is `visibility: hidden` until that class
+  arrives, so a repaired tile is invisible without `L.DomUtil.addClass`. Re-calling `done()` would not
+  do it — `TileLayer._tileReady` bails while `src` is the 1×1 gif — and would fire a second, spurious
+  `tileerror`. Opacity needs no help: `_updateOpacity` fades any `current && loaded` tile to 1 without
+  checking whether it errored.
+- **`<img>` only, never the cors fetch.** Nine blank tiles retried through the fetch path are nine
+  *consecutive* fetch failures, `tileFetchMisses` latches `tilePath` to `'img'` at six, and that latch
+  was measured costing a session its entire tile cache. A retry of a known-bad tile is not evidence
+  about the source, so it must not vote. The cost accepted: a healed tile is not cached, so panning back
+  to it is a fresh download.
+- **`gone()` is re-checked after a *successful* load.** `_abort()` cancels by pointing `src` at the gif,
+  which fires `load` — so a cancelled tile can resolve `loadImg` looking like a success.
+- **No batch size and no shared timer.** Each tile heals in the async closure it already has, so a
+  screenful of nine blanks makes at most nine spaced attempts — the same shape as any pan — and the
+  independent jitter smears them apart instead of aligning them. Higher concurrency measured *better*
+  on this origin, so a limiter would be the same mistake here as in the pipeline.
+
+`heal` and `healed` are counted apart from `net` and `tiles` in `tileStats` on purpose: folding a repair
+into either would make "requests per tile" read healthy exactly when a screenful is costing double, and
+that ratio is how this work is judged.
+
+The old "imagery is failing" toast counted raw `tileerror`s and fired during any passing burst-throttle,
+telling the user to change a source that was working. It now says blank tiles keep retrying and to
+change source only if they are *still* blank afterwards.
+
+**A skipped slot is waited, not spent.** `healTile` makes no request while `document.hidden` or
+`navigator.onLine === false`, but it does not consume the slot either — it loops. That distinction is
+the difference between working and not on a phone, where switching away mid-review is the normal case:
+spending the slots meant coming back to tiles that would never try again until the map moved. Waiting
+needs no resume hook and no `visibilitychange` listener, because a hidden tab's timers are throttled by
+the browser, so the loop paces itself instead of queueing a burst for the moment of unhide, and
+`backoff`'s jitter smears whatever does resume together. `TILE_HEAL_WAITS` bounds it at roughly twenty
+minutes so a tab left in a pocket cannot hold the closure for ever.
+
+Measured with `document.hidden` overridden, against the flaky stub:
+
+| | hidden for 120 s | then visible |
+|---|---|---|
+| heal requests | **0** | 29 → 54 |
+| server hits | **frozen at 75** | 104 → 129 |
+| painted | 0 / 9 | 4 → **9 / 9** by +100 s |
+
+Zero requests while hidden, and full recovery afterwards. A resume hook was the obvious alternative and
+is deliberately **not** used: one that re-creates tiles would send them back through the cors fetch,
+which is exactly the path that must not vote on `tileFetchMisses`.
+
 ## Environment constraints
 
 - **Must be served over HTTPS or from `localhost`.** Chrome restricts IndexedDB on `file://`, and
@@ -519,6 +682,72 @@ Each of these shipped once and was caught by testing:
    session *and* made every later tile bypass the IndexedDB cache. Missing CORS may only be inferred
    from the one pattern that implies it — a network-shaped `fetch` failure on a tile that a plain
    `<img>` then loads — and never from a timeout or an HTTP status.
+13. **A tile layer event listener on the map.** `GridLayer` fires `tileunload` as
+   `this.fire('tileunload', {tile, coords})` — two arguments, **no `propagate` flag** — and
+   `Evented.fire` only walks `_eventParents` when that flag is truthy. `Layer._layerAdd` never calls
+   `addEventParent(map)`; the only two callers in all of Leaflet are `FeatureGroup.addLayer` and
+   popup/tooltip binding. So `map.on('tileunload', …)` **never ran once.** Measured: 0 firings on the
+   map against 9 on the layer for a single `fitBounds`. That silently disabled the whole
+   cancellation-and-revocation mechanism, so every tile that painted leaked its object URL for the life
+   of the session, and every tile panned away from downloaded to completion against a 6-connection cap.
+   Tile events go on the **layer**.
+14. **`img.complete` as a "still in flight" test.** An `<img>` that has never been given a `src`
+   reports `complete === true` — measured `true` in a real browser. The abort path guarded on
+   `!el.complete`, so it skipped precisely the tiles that were still waiting on the cache read or the
+   fetch, which are the ones whose retry chains most needed stopping. Leaflet's own `_abortLoading` is
+   blocked by the same guard and leaves them in `_tiles` too. Stock Leaflet gets away with it because
+   its `createTile` assigns `src` synchronously; anything that assigns it after an `await` must track
+   its own flag.
+15. **Assigning `img.onload` / `img.onerror` on a tile.** Leaflet owns those two properties:
+   `TileLayer._abortLoading` sets both to a no-op **unconditionally**, before its `complete` check, and
+   `TileLayer._onTileRemove` nulls `onload`. Assigning them meant every aborted tile's promise never
+   settled and its async pipeline stayed suspended for the rest of the session, holding the `<img>`, the
+   `Blob` and the object URL. Use `addEventListener`.
+16. **A layer `maxZoom` below the map's.** `_setView` sets `_tileZoom = undefined` when the rounded
+   zoom exceeds the layer's `maxZoom` and then skips `_update`; `_pruneTiles` then hits
+   `zoom > options.maxZoom` and calls **`_removeAllTiles()`**. The map was built with `maxZoom: 22` and
+   the imagery layer with `maxZoom: 21`, so two pinches past review zoom blanked the imagery entirely
+   and it returned only on the way back down, as a full cold reload. Measured: 6 tiles at z21, **0 at
+   z22**, 6 again at z21. Note `_clampZoom` — where `maxNativeZoom` acts — is only reached in the
+   *else* branch, so `maxNativeZoom` alone does not fix it: `maxZoom` must match the map's **and**
+   `maxNativeZoom` must cap the real tiles. The `osm` preset needs `maxNativeZoom: 19`, since
+   `tile.openstreetmap.org` serves no deeper and `transientImagery` treats the resulting 404s as worth
+   retrying.
+17. **Trusting Leaflet's cached container size.** `_sizeChanged` is set in exactly two places in all of
+   Leaflet 1.9.4 — `Map.initialize` and `invalidateSize`, whose only internal caller is the window
+   `resize` handler — and there is no `ResizeObserver` anywhere in it. `#map` is absolutely positioned
+   inside `#wrap`, a flex sibling of `#tags` and `#start`, so hiding the start panel, expanding it, or
+   painting a different number of tag chips resizes the map with no `resize` event anywhere. Measured at
+   496×822: **+386 px** with the panel expanded, **−101 px** with it hidden, and still wrong two frames
+   later. **Both signs hurt** — too tall requests up to 2.5× the visible area from an origin capped at
+   six connections, too short leaves a blank strip along the bottom — and which one you get depends on
+   the layout state the map happened to be in when the last window `resize` fired, so the symptom is
+   not stable. A `ResizeObserver` on `#map` fixes the tiling, but a *synchronous* `syncMapSize()` is
+   still needed in `fitShape()`, because `ingest` hides the panel and re-fits inside one task while the
+   observer only runs a frame later.
+
+**Amendment to #12, measured 2026-08-19.** The rule above is right but was **insufficient at the tile
+level.** A connection dropped mid-flight is `network`-shaped, and the `<img>` retry right after it
+succeeds — which is *literally* the blessed pattern, yet a false positive, because the fault was
+transient and per-request rather than a header. At the measured drop rate of ~0.12 and
+`corsSignals >= 2`:
+
+> P(≥2 such tiles in a 16-tile screenful) ≈ 1 − 0.88¹⁶ − 16·0.12·0.88¹⁵ ≈ **0.62**
+
+So roughly **six screenfuls in ten latched `pixelMode = 'blocked'` on a source whose CORS headers are
+perfect**, disabling auto-fit for the session *and* making every later tile skip the cache. A header
+fault is deterministic and origin-wide; a reset is not, and only somewhere that can afford three
+requests can tell them apart. **`probeImagery` is now the only place allowed to set
+`pixelMode = 'blocked'`**, and it needs all three signals: a network-shaped `fetch` failure, then a
+`no-cors` fetch that resolves (the server was reached, so the fault is its headers), then a plain
+`<img>` that loads (the bytes really are there). The per-tile path keeps a purely *performance* latch
+(`tileFetchMisses`) that never touches `pixelMode`.
+
+`onAttempt` therefore reports `(attempt, message, kind)` for every failed attempt, not just the last.
+Only the last attempt's kind reaches the thrown error, and the budynki proxy fails **two different
+ways within one probe** — 404 to about half its GetMaps, duplicated CORS headers on the rest — so a
+probe reading only `err.kind` sees whichever came last. Measured ending on `'http'`, which meant it
+never diagnosed the header fault at all despite a CORS rejection having occurred.
 
 ## Driving the app headlessly
 
@@ -536,6 +765,30 @@ with real wall-clock time, and read the marker. Measured that way, boot complete
 `--enable-logging=stderr --v=1` is what surfaces the browser's own CORS console messages, which is
 how the duplicated-header fault above was identified. `--dump-dom` is enough to confirm markup and
 that `bindUI` ran.
+
+Three more things the harness gets wrong by default, each of which produced a confidently wrong answer
+before it was found:
+
+- **`--user-data-dir` must live on the Windows filesystem**, not under `/home` or anywhere reached by a
+  `\\wsl.localhost` UNC path. On a UNC path Edge cannot get sandbox access or SQLite locks, the quota
+  database never opens, **IndexedDB is unavailable**, and the app throws during boot before `initMap()`
+  runs. The log says `Could not open the quota database, resetting` among a hundred lines of unrelated
+  noise, and the symptom reads as "the app is broken". `/mnt/c/Users/<you>/AppData/Local/Temp/...` works.
+- **The mobile user agent is load-bearing, not cosmetic.** `Browser.mobile` is
+  `typeof orientation !== 'undefined' || userAgentContains('mobile')`, and it selects Leaflet's
+  `updateWhenIdle` — which decides whether tiles load during a pan or only on `moveend`. With a desktop
+  UA the harness silently exercises a different code path from the phone.
+- **A fresh profile per run, and `dbClear('tiles')` in the probe.** Otherwise the second run of any
+  timing measurement is served from the IndexedDB tile cache and means nothing. A cold cache *is* the
+  case worth measuring.
+
+For anything about tile behaviour, prefer a **local stub tile server** over the real origin. Serving a
+small PNG with a query-string-keyed failure counter — 503 for the first N requests per distinct bbox,
+then 200 forever — makes "does a blank tile ever retry" a deterministic question instead of a question
+about GUGiK's mood that afternoon. Setting N above the in-pipeline budget (one cors fetch plus
+`TILE_IMG_TRIES`) isolates the healing path specifically. Note also that after a dozen harness runs the
+real origin starts throttling *you*, so late A/B numbers against it are noise; alternate old and new
+runs and use distinct bboxes.
 
 ## Measured performance, and an honest caveat
 
@@ -565,11 +818,16 @@ but that was never measured.** Do not describe the wasm as a large speedup.
   reasonably want the source geometry byte-for-byte.
 - Re-check whether the upstream address tile layers have started being generated; if they have, the
   in-app path covers addresses too and the paste route becomes a convenience rather than a necessity.
-- The `~50%` figure for `/orto` came from 24 requests on one connection. If it is really load
-  dependent rather than random, jittered retries may be making it worse, not better — worth
-  measuring per-tile attempt counts on a real screenful before trusting `TILE_TRIES = 4`. Replaying
-  the shipped policy over 20 distinct tiles did give 20/20 loaded from 28 requests, 1.40 attempts
-  each, no blanks — but that was one desktop connection, not a phone on mobile data.
+- **Resolved 2026-08-19, and the answer was yes.** The flakiness *is* load dependent: five
+  back-to-back requests were dropped 5/5 while the identical URLs answered 7/8 minutes later when
+  spaced. So the old policy's retries were making it worse, and `TILE_TRIES = 4` is gone — see
+  *Imagery transport*. What remains open is that **every number in that section came from a wired
+  datacentre link, not a phone.** Re-run the harness on the owner's mobile connection and re-derive
+  `TILE_FETCH_TIMEOUT`, `TILE_IMG_TIMEOUT`, `TILE_HEAL_BASE` and `TILE_HEAL_CAP` before treating them
+  as settled.
+- Healing is verified against a local stub, not against the real origin on a phone. The stub proves the
+  *mechanism* — suspend while hidden, resume visible, recover every tile — but the schedule's fit to
+  GUGiK's real recovery timescale rests on the burst measurement from a wired link.
 - Tune the auto-fit confidence gate. Currently refuses below z=1.6; untested against real
   orthophoto over tree cover and snow.
 - Addresses currently upload as standalone nodes. Merging an address into an existing OSM building
