@@ -38,6 +38,7 @@ That check exists because a missing id previously shipped as a runtime crash.
 | `src/sw.js` | service worker source; `__BUILD_ID__` is stamped at build time |
 | `sw.js`, `manifest.webmanifest`, `icon-*.png` | PWA shell (`sw.js` generated) |
 | `test/retry.test.mjs` | retry/timeout helpers, sliced out of `app.js` and run against a stub fetch |
+| `test/order.test.mjs` | `nearestChain`, sliced out likewise, against a stub `metresBetween` |
 | `test/mvt.test.mjs` | the hand-written vector-tile decoder, against real captured tiles |
 | `test/context.test.mjs` | overlap and duplicate-address verdicts, against real OSM footprints |
 | `test/tags.test.mjs` | the tag editor's draft-to-tags normalisation |
@@ -150,6 +151,52 @@ Verified in a browser: a cell loads in ~190 ms with 47 footprints, a candidate c
 footprint reads `covered by an OSM building`, the duplicate check reports `5 already in OSM here`,
 and 53 dashed footprints plus house-number labels draw on screen.
 
+### Review order walks to the nearest candidate
+
+`orderCandidates` used to sort on tier, then latitude, then longitude, which made consecutive
+candidates near in latitude and **arbitrary in longitude** — so essentially every step was a teleport.
+That is not only a feel problem: a teleport makes Leaflet discard the whole screenful and refetch, where
+a short step keeps the tiles it has and fetches only the newly exposed edge, and anything it does refetch
+is likely already in the IndexedDB cache. On an origin capped at six connections at 1–4 s per tile, that
+is the difference between waiting for a screenful and waiting for an edge.
+
+`nearestChain` walks the batch greedily to the nearest unvisited candidate. A uniform grid of ~65 m
+cells — about a screen at review zoom, which is the scale at which two candidates share tiles — keeps it
+affordable: the search expands ring by ring from the current cell and touches a handful of cells per
+step. Ring *r+1* is checked after a hit in ring *r*, because a candidate just across a cell boundary can
+be nearer than one in the far corner of the cell that hit; and a full scan is the fallback beyond 64
+rings, so a sparse area cannot drop the rest of the queue.
+
+Measured on a shuffled 164-object field, step distance between consecutive candidates:
+
+| | latitude then longitude | nearest-neighbour |
+|---|---|---|
+| mean | 181 m | **72 m** |
+| median | 38 m | 38 m |
+| **p90** | 300 m | **41 m** |
+| steps over 100 m | **28** | **1** |
+
+The single remaining long step is the unavoidable hop to a detached cluster. p90 of 41 m means nine
+steps in ten stay inside a screen at review zoom.
+
+**Tier no longer participates in the order, and this was measured rather than assumed.** Chaining each
+tier separately fragments one sweep into three interleaved ones, and the concatenation adds a long jump
+at each seam — steps over 100 m went from 1 to 16 on the same field. Nothing was lost: no code ever
+depended on the *order*, only on `c.tier` as a display label, and `paintChrome` overrides that with the
+real geometric verdict from the `/map` cell as soon as it arrives. The centroid-distance tier was already
+documented above as "not enough" on its own.
+
+Two properties of greedy nearest-neighbour worth knowing before someone "fixes" them:
+
+- **It backtracks.** Greedy can corner itself and need one long step back to a region it walked past.
+  One backtrack per batch is not worth a 2-opt pass, so `test/order.test.mjs` asserts on how *rare* long
+  steps are rather than on the maximum.
+- **On a perfectly regular grid it ties with latitude order**, because sorting a regular grid by
+  (lat, lon) already produces a clean raster scan. The first version of the test used a regular grid and
+  therefore asserted nothing. Real buildings are irregular, which is where latitude order falls apart, so
+  the test jitters by about a third of the pitch — enough to break row alignment, not enough to turn the
+  field into noise and start measuring the input instead of the code.
+
 ### What you have already accepted is drawn too
 
 Accepted objects are not in OSM yet, so they are absent from the `/map` cell that supplies the cyan
@@ -174,6 +221,17 @@ accepted"*; the third, 1.2 km away, draws no ochre at all.
 
 **Land-cover areas are drawn but excluded from the check**, for the reason `overlapVerdict` already skips
 them — a farmland parcel containing a barn is not a duplicate of the barn.
+
+### And so is everything still queued for review
+
+Candidates still ahead in the queue are drawn faint — the same pink as the current one but thin, dashed
+and mostly transparent, so it reads as "not this one yet" rather than competing with it. Asked for as
+*"display all suspected buildings … so we know where prolly we will jump to next"*, and it pairs with the
+ordering above: what you see nearby genuinely is what comes next now.
+
+Selected by the **visible bounds** rather than a fixed radius, and redrawn on `moveend`/`zoomend`, because
+the question it answers is one you ask by zooming out. Capped at 400 polygons. Measured 3 drawn at review
+zoom, 63 at z17 and 143 at z14 on a 164-object batch.
 
 ## Provenance and staleness — why demolished buildings are still in the data
 

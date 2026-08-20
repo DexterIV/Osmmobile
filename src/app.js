@@ -1225,15 +1225,98 @@ async function buildContext() {
 }
 let ctxPts = [];
 
+// Chain a list of candidates nearest-neighbour, so each step is the shortest one
+// available from where you already are.
+//
+// This replaced a sort on latitude then longitude, which made consecutive
+// candidates near in latitude and ARBITRARY in longitude — so essentially every
+// step was a teleport. That matters for more than feel: a teleport makes Leaflet
+// discard the whole screenful and refetch, where a short step keeps the tiles it
+// already has and fetches only the newly exposed edge, and anything it does
+// refetch is likely already in the IndexedDB cache. On an origin capped at six
+// connections with 1-4 s per tile, that is the difference between waiting for a
+// screenful and waiting for an edge.
+//
+// Greedy nearest-neighbour rather than a space-filling curve because it is what
+// the shortest-step behaviour actually is, and a grid keeps it affordable: cells
+// are about a screen wide at review zoom, and the search expands ring by ring
+// from the current cell, so it touches a handful of cells per step instead of the
+// whole list. Ring r+1 is checked after a hit in ring r because a candidate just
+// across a cell boundary can be nearer than one in the far corner of the cell
+// that hit.
+function nearestChain(list) {
+  if (list.length < 3) return list.slice();
+  // ~65 m of latitude. Two candidates this close share most of their tiles.
+  const CELL = 0.0006;
+  const cells = new Map();
+  const ck = (la, lo) => Math.floor(la / CELL) + ':' + Math.floor(lo / CELL);
+  for (const c of list) {
+    const k = ck(c.centroid[0], c.centroid[1]);
+    let a = cells.get(k);
+    if (!a) cells.set(k, a = []);
+    a.push(c);
+  }
+  const left = new Set(list);
+  // Start from the westernmost of the southernmost row, so the order is stable
+  // across reloads rather than depending on however the tiles happened to arrive.
+  let at = list.reduce((b, c) => (c.centroid[0] < b.centroid[0] ||
+    (c.centroid[0] === b.centroid[0] && c.centroid[1] < b.centroid[1])) ? c : b, list[0]);
+  const out = [];
+  while (at) {
+    out.push(at);
+    left.delete(at);
+    if (!left.size) break;
+    const [la, lo] = at.centroid;
+    const gi = Math.floor(la / CELL), gj = Math.floor(lo / CELL);
+    let best = null, bestD = Infinity, foundAt = -1;
+    for (let r = 0; r < 64; r++) {
+      // One ring past the first hit is enough; two rings of slack would only
+      // cost work.
+      if (foundAt >= 0 && r > foundAt + 1) break;
+      for (let i = gi - r; i <= gi + r; i++) {
+        for (let j = gj - r; j <= gj + r; j++) {
+          // Only the perimeter of ring r; the inside was covered by earlier rings.
+          if (r && Math.abs(i - gi) !== r && Math.abs(j - gj) !== r) continue;
+          const bucket = cells.get(i + ':' + j);
+          if (!bucket) continue;
+          for (const c of bucket) {
+            if (!left.has(c)) continue;
+            const d = metresBetween(at.centroid, c.centroid);
+            if (d < bestD) { bestD = d; best = c; }
+          }
+        }
+      }
+      if (best && foundAt < 0) foundAt = r;
+    }
+    // A gap wider than 64 cells (~4 km) is possible in a sparse area; fall back to
+    // a full scan rather than dropping the rest of the queue on the floor.
+    if (!best) {
+      for (const c of left) {
+        const d = metresBetween(at.centroid, c.centroid);
+        if (d < bestD) { bestD = d; best = c; }
+      }
+    }
+    at = best;
+  }
+  return out;
+}
+
 function orderCandidates() {
   for (const c of candidates) {
     c.dist = ctxIndexReady ? wasm.nearestMeters(c.centroid[0], c.centroid[1], 400) : 1e9;
     c.tier = c.dist > S.clearRadius ? 0 : c.dist > 8 ? 1 : 2;
   }
-  candidates.sort((a, b) => (a.tier - b.tier) || (a.centroid[0] - b.centroid[0]) || (a.centroid[1] - b.centroid[1]));
+  // One sweep over everything, tier included. Chaining each tier separately was
+  // tried and measured worse: it fragments one sweep into three interleaved ones
+  // and the concatenation adds a long jump at each seam — steps over 100 m went
+  // from 1 to 16 on a 164-object field. Tier is not lost by this, because nothing
+  // ever depended on the ORDER: it is a display label, and paintChrome overrides
+  // it with the real geometric verdict from the /map cell as soon as that arrives.
+  // The centroid-distance tier was already documented as "not enough" on its own.
+  candidates = nearestChain(candidates);
 }
 
-let map, imgLayer, ctxLayer, shape, vertexGroup, undoStack = [];
+let map, imgLayer, ctxLayer, pendingLayer, shape, vertexGroup, undoStack = [];
 
 function imagerySource() {
   if (S.imagery === 'custom') return { url: S.customUrl, layers: S.customLayers, attr: 'custom' };
@@ -1846,8 +1929,15 @@ function initMap() {
     // z18 the first data request covered ~150 m and came back empty.
   }).setView([52.2, 21.0], 14);
   makeImagery();
+  // Below ctxLayer so the OSM footprints and the queued-ochre outlines stay
+  // readable over it, and above the imagery so it is visible at all.
+  pendingLayer = L.layerGroup().addTo(map);
   ctxLayer = L.layerGroup().addTo(map);
   vertexGroup = L.layerGroup().addTo(map);
+  // Redrawn on pan and zoom, not just per candidate: the point of this layer is
+  // to answer "where does this go next", which is a question you ask by zooming
+  // out, and selecting by the visible bounds is also what keeps it cheap.
+  map.on('moveend zoomend', drawPending);
   watchMapSize();
 }
 
@@ -1916,6 +2006,7 @@ function show() {
   paintChrome();
   drawShape();
   drawContext();
+  drawPending();
   fitShape();
 }
 
@@ -2272,6 +2363,34 @@ function queuedNear(c) {
     ways.push({ ring: q.ring, hn: q.hn });
   }
   return { ways, addrs: [] };
+}
+
+// Everything still queued for review, faint, so the shape of the batch and the
+// next few steps are visible instead of arriving one surprise at a time. Asked
+// for as "display all suspected buildings ... so we know where prolly we will
+// jump to next", and it pairs with the nearest-neighbour ordering: what you see
+// nearby genuinely is what comes next now.
+const PENDING_CAP = 400;
+
+function drawPending() {
+  if (!pendingLayer) return;
+  pendingLayer.clearLayers();
+  if (!candidates.length) return;
+  const b = map.getBounds().pad(0.25);
+  const c = cur();
+  let n = 0;
+  for (let i = cursor; i < candidates.length && n < PENDING_CAP; i++) {
+    const p = candidates[i];
+    if (p === c) continue;                       // the current one is drawn solid
+    if (!b.contains(L.latLng(p.centroid))) continue;
+    n++;
+    // The same pink as the candidate, but thin, dashed and mostly transparent, so
+    // it reads as "not this one yet" rather than competing with it.
+    const opts = { color: '#ff2d95', weight: 1, opacity: 0.4, dashArray: '3,3',
+                   fillColor: '#ff2d95', fillOpacity: 0.05, interactive: false };
+    if (p.kind === 'address') L.circleMarker(p.ring[0], Object.assign({ radius: 5 }, opts)).addTo(pendingLayer);
+    else L.polygon(p.ring, opts).addTo(pendingLayer);
+  }
 }
 
 function drawContext() {
