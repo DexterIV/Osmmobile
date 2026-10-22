@@ -902,9 +902,19 @@ function ringSignedArea(r) {
 }
 
 async function tileBytes(z, x, y, tries) {
-  const r = await fetchOk(apiBase() + '/tiles/' + z + '/' + x + '/' + y + '.pbf',
-    { tries: tries || 3, timeout: 20000 });
-  return new Uint8Array(await r.arrayBuffer());
+  // A 404 on a tile means "no data here" (empty tile at this zoom), not that
+  // the server is unreachable. Return an empty buffer so fetchAreaTiles treats
+  // it as a tile with no buildings rather than counting it as a failure.
+  try {
+    const r = await fetchOk(apiBase() + '/tiles/' + z + '/' + x + '/' + y + '.pbf',
+      { tries: tries || 3, timeout: 20000 });
+    return new Uint8Array(await r.arrayBuffer());
+  } catch (err) {
+    if (err.kind === 'http' && String(err.message).match(/^HTTP 404$/)) {
+      return new Uint8Array(0);
+    }
+    throw err;
+  }
 }
 
 // Buildings for an area, straight from the vector tiles. Addresses are not
