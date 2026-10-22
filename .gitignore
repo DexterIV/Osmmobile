@@ -1,4 +1,6 @@
 node_modules/
 core.wasm
+index.html
+sw.js
 osmmobile-repo.zip
 .claude/settings.local.json
