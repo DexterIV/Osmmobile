@@ -1339,7 +1339,9 @@ function imageryProbeUrl(src) {
 //     and fetch and <img> share that one pool. Requests, not bytes, are the
 //     scarce resource.
 //   * TTFB 1.0-8.6 s on a 256x256 GetMap, mean 1.13 s over 20 successes at
-//     concurrency 6. The old 12 000 ms timeout was only 1.4x the worst success.
+//     concurrency 6. A 6 s fetch timeout cut off legitimate slow responses,
+//     so the fetch timeout is raised to 10 s and the  timeout to 12 s.
+//     The retry/heal mechanism is the real safety net for flaky connections.
 //   * 4 of 24 requests were dropped mid-connection (TLS EOF / connection reset).
 //     Drops arrive fast; hangs are the expensive failure.
 //   * Five back-to-back requests were dropped 5/5, and the same URLs succeeded
@@ -1352,14 +1354,14 @@ function imageryProbeUrl(src) {
 // one retry is worth far more than a long timeout. Measured in a headless
 // browser before this change, on a cold cache: nine tiles took 77 GetMaps and
 // not one of them had painted after 30 seconds.
-const TILE_FETCH_TIMEOUT = 6000;
-const TILE_IMG_TIMEOUT = 8000;
+const TILE_FETCH_TIMEOUT = 10000;
+const TILE_IMG_TIMEOUT = 12000;
 const TILE_IMG_TRIES = 3;
 const TILE_IMG_BACKOFF = 300;
 const TILE_IMG_BACKOFF_CAP = 1500;
 // Whatever the source, stop retrying a tile past this. A blank tile now beats a
 // connection still tied up when the next screenful arrives.
-const TILE_DEADLINE = 15000;
+const TILE_DEADLINE = 20000;
 // Consecutive cors-fetch failures after which tiles stop paying for the fetch
 // and go straight to <img>. Purely a performance latch: it never touches
 // pixelMode and never disables auto-fit.
@@ -2763,25 +2765,37 @@ async function autoAlign() {
   }
 }
 
+// Guard against the same verdict firing twice — the swipe handler on #bar and
+// the button onclicks both call verdict(), and on mobile a swipe also fires a
+// click. verdict() is async and only advances cursor after the awaits, so two
+// concurrent calls would read the same cur() and double-process one candidate,
+// skipping the next.
+let verdicting = false;
 async function verdict(kind) {
-  const c = cur();
-  if (!c) return;
-  await dbPut('decisions', c.key, { verdict: kind, t: Date.now() });
-  if (kind === 'reject') reportReject(c);
-  if (kind === 'accept') {
-    await dbPut('queue', c.key, {
-      kind: c.kind, ring: c.ring, tags: c.tags, t: Date.now(),
-      // Without holes here an approved forest-island-in-farmland uploads solid.
-      holes: (c.holes || []).filter((h) => h && h.length >= 3),
-      moved: !!c.moved, city: c.tags['addr:city'] || '',
-    });
+  if (verdicting) return;
+  verdicting = true;
+  try {
+    const c = cur();
+    if (!c) return;
+    await dbPut('decisions', c.key, { verdict: kind, t: Date.now() });
+    if (kind === 'reject') reportReject(c);
+    if (kind === 'accept') {
+      await dbPut('queue', c.key, {
+        kind: c.kind, ring: c.ring, tags: c.tags, t: Date.now(),
+        // Without holes here an approved forest-island-in-farmland uploads solid.
+        holes: (c.holes || []).filter((h) => h && h.length >= 3),
+        moved: !!c.moved, city: c.tags['addr:city'] || '',
+      });
+    }
+    const el = $('map');
+    el.classList.add(kind === 'accept' ? 'flickR' : kind === 'reject' ? 'flickL' : 'flickU');
+    setTimeout(() => el.classList.remove('flickR', 'flickL', 'flickU'), 130);
+    cursor++;
+    await refreshQueueBadge();
+    show();
+  } finally {
+    verdicting = false;
   }
-  const el = $('map');
-  el.classList.add(kind === 'accept' ? 'flickR' : kind === 'reject' ? 'flickL' : 'flickU');
-  setTimeout(() => el.classList.remove('flickR', 'flickL', 'flickU'), 130);
-  cursor++;
-  await refreshQueueBadge();
-  show();
 }
 
 // Geometry of everything accepted but not yet uploaded. Held in memory because
