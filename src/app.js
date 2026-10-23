@@ -609,6 +609,19 @@ async function diagnose() {
     out.push('   CSP will block every outbound request below. Deploy the file');
     out.push('   to a real https origin and open it directly.');
   }
+  if (apiBase() === DEF.apiBase) {
+    out.push('api base    default (budynki.openstreetmap.org.pl — upstream v2)');
+    out.push('');
+    out.push('!! Upstream v2 (2026-10 rework) sends no Access-Control-Allow-Origin');
+    out.push('   on ANY endpoint, so from this origin every cross-origin fetch is');
+    out.push('   refused before the body is ever seen. Data loads either through');
+    out.push('   Settings → API base pointed at a mirror that adds the header, or');
+    out.push('   once upstream sends it again (it did, on v1). The /package');
+    out.push('   download route and the imagery tiles are the two things that');
+    out.push('   work without a mirror.');
+  } else {
+    out.push('api base    mirror: ' + apiBase());
+  }
   out.push('');
 
   const line = (s) => {
@@ -639,26 +652,25 @@ async function diagnose() {
     for (const n of notes) line('            · ' + n);
   };
 
-  await probe('random', base + '/random/', async (r) => {
+  // v2 dropped /random/, /layers/, /sc/* and /josm_data outright (404), so the
+  // probes are the endpoints a built fetch actually uses: the tiles (there an
+  // empty 404 means "no bin here", which a hit-free carry would never see),
+  // liveness (/status), and the very thing the paste route ingests.
+  await probe('tiles', base + '/tiles/6/34/20', async (r) => {
+    const b = await r.blob();
+    return 'ok  ' + (b.size / 1024).toFixed(0) + ' KB mvt';
+  }, { tries: 2, timeout: 20000 });
+  await probe('status', base + '/status', async (r) => {
     const j = await r.json();
-    return 'ok  lat=' + Number(j.lat).toFixed(3) + ' lon=' + Number(j.lon).toFixed(3);
+    const osm = (j.jobs || []).find((x) => x.name === 'osm_update') || {};
+    return 'ok  v' + (j.version || '?') + ', osm_update last ' +
+      ((osm.last_outcome && osm.last_outcome.kind) || '?');
   });
-  await probe('layers', base + '/layers/', async (r) => {
-    const j = await r.json();
-    return 'ok  ' + Object.keys(j.available_layers || {}).length + ' layers';
-  });
-  const q = 'xmin=21.00&ymin=52.20&xmax=21.02&ymax=52.22';
-  await probe('sc/build', base + '/sc/proposed_buildings?' + q, async (r) => {
-    const j = await r.json();
-    return 'ok  ' + (j.features || []).length + ' features';
-  });
-  await probe('sc/addr', base + '/sc/proposed_addresses?' + q, async (r) => {
-    const j = await r.json();
-    return 'ok  ' + (j.features || []).length + ' features';
-  });
-  await probe('josm_data', base + '/josm_data?filter_by=bbox&layers=addresses_to_import,buildings_to_import&' + q,
-    async (r) => 'ok  ' + ((await r.text()).length / 1024).toFixed(0) + ' KB xml',
-    { tries: 2, timeout: 45000 });
+  await probe('package', base + '/package?bbox=21.0,52.2,21.02,52.22&datasets=bdot10k,egib,prg',
+    async (r) => {
+      const j = await r.json();
+      return 'ok  ' + ((j.features || []).length) + ' features geojson';
+    }, { tries: 2, timeout: 30000 });
   await probe('overpass', 'https://overpass-api.de/api/interpreter?data=' +
     encodeURIComponent('[out:json][timeout:10];node(52.20,21.00,52.201,21.001);out count;'),
     async (r) => { await r.json(); return 'ok'; },
@@ -701,25 +713,52 @@ async function diagnose() {
 }
 
 // fetchArea, which read /sc/proposed_buildings and /sc/proposed_addresses with a
-// /josm_data fallback, has been removed. Every one of those paths is unreadable
-// from a browser — /sc/* sends Access-Control-Allow-Origin twice on every single
-// request, /josm_data sends none — so it could only ever fail, and keeping it
-// meant "Load this area" always failed too. Vector tiles replace it below.
-// Diagnostics still probes those endpoints, which is where to look if the
-// upstream headers are ever fixed.
+// /josm_data fallback, was deleted twice over: those endpoints failed CORS
+// outright in v1, and the 2026-10 v2 rewrite (Rust "osmpbudynkiv2") dropped them
+// entirely. Replaced by vector tiles for in-app loading and /package for the
+// exact-geometry download route.
 
 // ---- Mapbox Vector Tiles ---------------------------------------------------
-// /sc/* and /josm_data cannot be read from a browser: the first sends
-// Access-Control-Allow-Origin twice, the second not at all. /tiles/{z}/{x}/{y}.pbf
-// sends it exactly once, so it is the one candidate source that works in-app,
-// and it carries the same BDOT10k geometry with OSM-ready tags. Decoded by hand
-// because the build inlines everything into a single file.
+// Upstream went through a full rewrite on 2026-10-11 ("OSM Polska budynki/adresy
+// v2"). The API it serves now:
+//
+//   GET /tiles/{z}/{x}/{y}      MVT — NO .pbf suffix any more, and the router
+//                               rejects .pbf with a 400 that carries no CORS
+//                               header ("cannot parse value `20.pbf` to a u32")
+//   GET /package?bbox=w,s,e,n   the old /josm_data: a FeatureCollection of the
+//     &datasets=bdot10k,egib,  still-unmatched objects, but GeoJSON and id-less
+//     prg                      (ingestible by parseGeoJson unchanged)
+//   POST /report               {objects:[{source,key:UIRt}]} — v2's reject
+//                              reporting, replacing /sc/*/report
+//   GET /status, /updates      liveness; recent OSM-matching GeoJSON
+//
+//   /random/, /layers/ and /josm_data return 404 — they are gone, not flaky.
+//
+// Tile pyramid as measured from live tiles (the names changed wholesale):
+//   z5–11 agg_cells     aggregated bins: unmatched counts n_bdot10k/n_egib/
+//                       n_prg, totals t_*, ratios r_*, recency ts_*
+//   z12–13 points       one point per still-unmatched object, same counts
+//   z14      buildings  still-unmatched buildings, full polygons, with a
+//                       `tags` property of `key=value` pairs joined by `;`
+//                       and separate source:building / building:levels
+//            addresses  still-unmatched PRG addresses, addr:* ready — the
+//            *_all       first time addresses exist anywhere in the pyramid
+//
+// What v2 does NOT send is any Access-Control-Allow-Origin. v1 sent `*`; the
+// Rust rewrite dropped it because its own page is same-origin and nobody noticed
+// (the only ACAO mention in their tree is zero occurrences — checked). From
+// dexteriv.github.io a cross-origin fetch is therefore refused no matter what
+// the app does — this is what diagnostics reports, and the remedy is pointing
+// Settings → API base at a mirror that adds the header. The one route that
+// still works straight is a plain navigation to /package, which no CORS policy
+// restricts and the file route ingests.
 //
 // Only the subset the buildings layers use: layers, features, string and numeric
-// values, and MoveTo/LineTo/ClosePath geometry.
+// values, and MoveTo/LineTo/ClosePath geometry. Decoded by hand
+// because the build inlines everything into a single file.
 
 const TILE_DATA_Z = 14;   // deepest zoom served, and so the finest geometry
-const CLUSTER_Z = 6;      // buildings_clustered, for finding somewhere busy
+const CLUSTER_Z = 6;      // agg_cells bins, for finding somewhere busy
 const POLAND = [[49.0, 14.1], [54.9, 24.2]];
 const TD = new TextDecoder();
 
@@ -875,21 +914,29 @@ function tileQuantCm(lat, z) {
   return (40075017 * Math.cos(lat * Math.PI / 180) / Math.pow(2, z) / 4096) * 100;
 }
 
-const TILE_TAGS = ['building', 'amenity', 'man_made', 'leisure', 'historic', 'tourism'];
-
-// The tile carries BDOT metadata beside the OSM tags; only the latter may go up.
-// Matches what /josm_data emits for the same object: building, building:levels,
-// source:building=BDOT.
+// v2 packs the OSM-ready tags into one `tags` property as `key=value` pairs
+// joined by `;` — measured on live z14 tiles: `building=detached`,
+// `building=yes;fixme=EGiB: budynki transportu i łączności`. building:levels and
+// source:building ride beside it as their own properties. Upstream curates that
+// string itself (the fixme entries are deliberate), so no client-side whitelist:
+// whatever arrived as an OSM tag list goes up as one, which is exactly what
+// /josm_data emitted for the same object in v1.
 function tagsFromTile(p) {
   const t = {};
-  for (const k of TILE_TAGS) {
-    if (p[k] !== undefined && p[k] !== null && p[k] !== '') t[k] = String(p[k]);
+  for (const kv of String(p.tags || '').split(';')) {
+    const i = kv.indexOf('=');
+    if (i <= 0) continue;
+    const k = kv.slice(0, i).trim(), v = kv.slice(i + 1).trim();
+    if (k && v) t[k] = v;
   }
-  if (p.building_levels !== undefined && p.building_levels !== null && p.building_levels !== '') {
-    t['building:levels'] = String(p.building_levels);
+  if (p['building:levels'] !== undefined && p['building:levels'] !== null &&
+      p['building:levels'] !== '') {
+    t['building:levels'] = String(p['building:levels']);
   }
   if (!t.building) t.building = 'yes';
-  t['source:building'] = 'BDOT';
+  // v2 answers with `BDOT` or `EGiB` per feature; the value must follow the
+  // registry the geometry actually came from, so it travels with the tile.
+  t['source:building'] = p['source:building'] ? String(p['source:building']) : 'BDOT';
   return t;
 }
 
@@ -906,7 +953,7 @@ async function tileBytes(z, x, y, tries) {
   // the server is unreachable. Return an empty buffer so fetchAreaTiles treats
   // it as a tile with no buildings rather than counting it as a failure.
   try {
-    const r = await fetchOk(apiBase() + '/tiles/' + z + '/' + x + '/' + y + '.pbf',
+    const r = await fetchOk(apiBase() + '/tiles/' + z + '/' + x + '/' + y,
       { tries: tries || 3, timeout: 20000 });
     return new Uint8Array(await r.arrayBuffer());
   } catch (err) {
@@ -917,11 +964,15 @@ async function tileBytes(z, x, y, tries) {
   }
 }
 
-// Buildings for an area, straight from the vector tiles. Addresses are not
-// available this way: the served pyramid is buildings_clustered (z<=10),
-// buildings_centroids (z11-12) and buildings (z13-14) — the address layers the
-// upstream style references are not generated, checked across 40 tiles in ten
-// cities. Addresses still need the file or paste route.
+// Buildings for an area, straight from the vector tiles. Since the v2 rewrite
+// the z14 `buildings` layer is the still-unmatched set — matched rows only live
+// in buildings_all, which a review should not load — and per-object currency
+// dates are gone from the tiles (only z5-13 agg_cells carries recency, and only
+// for government changes of the last few days), so srcAge shows nothing rather
+// than a fabricated year. Addresses DO exist now (`addresses`, z14) but the
+// review pipeline ingests buildings only from tiles; addresses still come
+// through the /package/file route via the same button that used to call
+// /josm_data.
 async function fetchAreaTiles(bounds) {
   const tiles = tilesCovering(bounds, TILE_DATA_Z);
   const got = await Promise.all(tiles.map(async ([x, y]) => {
@@ -946,7 +997,7 @@ async function fetchAreaTiles(bounds) {
         if (ringSignedArea(ring) <= 0) continue;
         const cut = ring.some(([px, py]) =>
           px <= 0 || py <= 0 || px >= L.extent || py >= L.extent);
-        const id = f.props.lokalnyid;
+        const id = f.props.id;
         const key = id || t.x + '/' + t.y + '/' + ring[0][0] + ',' + ring[0][1];
         const prev = best.get(key);
         if (prev) {
@@ -956,18 +1007,34 @@ async function fetchAreaTiles(bounds) {
             (cut === prev.cut && ring.length > prev.ring.length);
           if (!better) continue;
         }
+        // v2 splits buildings across two registries — bdot10k (uuid ids, the
+        // same lokalnyid space v1 meant by `bdot:`) and egib (TERYT ids like
+        // `141805_2.0026.364_BUD`). The decisions key names the registry so an
+        // egib id can never collide with a bdot uuid.
+        const reg = f.props.source === 'egib' ? 'egib' : 'bdot';
+        // /report identity, captured here because the review sheet's reject
+        // needs it later: bdot10k requires PRZESTRZENNAZW beside the id, egib
+        // and prg key on the id alone. Missing either means unreportable.
+        let report = null;
+        if (reg === 'egib' && id) {
+          report = { source: 'egib', key: { id_budynku: String(id) } };
+        } else if (id && f.props.PRZESTRZENNAZW != null && f.props.PRZESTRZENNAZW !== '') {
+          report = { source: 'bdot10k', key: {
+            PRZESTRZENNAZW: String(f.props.PRZESTRZENNAZW), LOKALNYID: String(id) } };
+        }
         best.set(key, {
           cut,
           kind: 'building',
+          reg,
+          report,
           ring: ring.map(([px, py]) => tilePointToLatLon(TILE_DATA_Z, t.x, t.y, px, py, L.extent)),
           tags: tagsFromTile(f.props),
           srcId: id,
           // Provenance, kept off the uploaded tags but shown while reviewing.
-          // BDOT10k geometry is frequently years old — measured across 644
-          // buildings, a third dated from 2015 — which is why a demolished
-          // building can still be in the data.
-          srcDate: f.props.aktualnosc_geometrii ? String(f.props.aktualnosc_geometrii) : '',
-          srcStatus: f.props.status_bdot ? String(f.props.status_bdot) : '',
+          // v2 tiles carry no per-object currency year — status exists as
+          // KATEGORIAISTNIENIA for bdot rows only.
+          srcDate: '',
+          srcStatus: f.props.KATEGORIAISTNIENIA ? String(f.props.KATEGORIAISTNIENIA) : '',
         });
       }
     }
@@ -984,9 +1051,11 @@ async function fetchAreaTiles(bounds) {
   return { list: out, failed, clipped, tiles: tiles.length };
 }
 
-// Weighted pick from buildings_clustered, replacing the dead /random/. One z6
-// tile is about 110 KB and covers a large slice of Poland, so it is fetched one
-// at a time and cached rather than pulling the whole country.
+// Weighted pick from agg_cells, replacing the dead /random/. One z6 tile is
+// about 110 KB and covers a large slice of Poland, so it is fetched one at a
+// time and cached rather than pulling the whole country.
+// quiet is for the automatic attempt at boot, so a fresh launch does not open
+// with a warning if the tile server happens to be unreachable.
 async function clusterJump() {
   const order = tilesCovering(L.latLngBounds(POLAND[0], POLAND[1]), CLUSTER_Z);
   for (let i = order.length - 1; i > 0; i--) {
@@ -997,6 +1066,12 @@ async function clusterJump() {
   // coverage, and drawing only 3 at random meant "Take me somewhere" failed
   // whenever the empty tiles happened to be picked first. We break on the
   // first tile that has features, so we rarely fetch them all.
+  //
+  // Each bin is weighted by its unmatched buildable count (n_bdot10k + n_egib;
+  // n_prg is left out because in-app review ingests buildings only), and the
+  // jump target is the bin polygon's centroid, shoelaced like ringSignedArea —
+  // in plain JS so clusterJump does not depend on the wasm module for a
+  // one-off report that the point() wasm kernel would otherwise give.
   for (const [x, y] of order) {
     const ck = 'clusters/' + CLUSTER_Z + '/' + x + '/' + y;
     let buf = null;
@@ -1010,16 +1085,24 @@ async function clusterJump() {
       } catch (err) { continue; }
     }
     if (!buf.length) continue;
-    const L = mvtDecode(buf).buildings_clustered;
+    const L = mvtDecode(buf).agg_cells;
     if (!L || !L.features.length) continue;
     const picks = [];
     let total = 0;
     for (const fb of L.features) {
       const f = mvtFeature(fb, L);
       if (!f.rings.length || !f.rings[0].length) continue;
-      const w = Math.max(1, Number(f.props.no_of_points) || 1);
+      const w = (Number(f.props.n_bdot10k) || 0) + (Number(f.props.n_egib) || 0);
+      if (!w) continue;
+      const r = f.rings[0];
+      let ax = 0, cx = 0, cy = 0;
+      for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+        const cross = r[j][0] * r[i][1] - r[i][0] * r[j][1];
+        ax += cross; cx += (r[j][0] + r[i][0]) * cross; cy += (r[j][1] + r[i][1]) * cross;
+      }
+      if (!ax) continue;
       total += w;
-      picks.push({ w, pt: f.rings[0][0] });
+      picks.push({ w, pt: [cx / (3 * ax), cy / (3 * ax)] });
     }
     if (!picks.length) continue;
     let r = Math.random() * total;
@@ -1059,10 +1142,9 @@ async function loadArea() {
   }
 }
 
-// /random/ is not used: it answers 500 on every request and its error page
-// carries no CORS header, so a browser sees only an opaque network failure.
-// buildings_clustered gives the same "somewhere with work" answer, weighted by
-// how much work is there, from a tile that the browser is allowed to read.
+// /random/ is not used: on v1 it answered 500 on every request, and v2 removed
+// the route outright. agg_cells gives the same "somewhere with work" answer,
+// weighted by how much work is there, from a tile the browser can read.
 // quiet is for the automatic attempt at boot, so a fresh launch does not open
 // with a warning if the tile server happens to be unreachable.
 async function loadRandom(quiet) {
@@ -1080,11 +1162,12 @@ async function loadRandom(quiet) {
 }
 
 // Candidates are sparse, so a small bbox legitimately returns nothing at all —
-// measured against /josm_data, a z18 viewport (~150 m) and even a z16 one come
-// back as a bare `<osm version="0.6"/>`, 20 bytes, while 0.024° yields 56 nodes.
+// measured against v1 /josm_data, a z18 viewport (~150 m) and even a z16 one came
+// back as a bare `<osm version="0.6"/>`, 20 bytes, while 0.024° yielded 56 nodes.
 // Every data request is therefore widened to at least this span about the centre
 // of the view, so neither route can hand back an empty result that looks like a
-// server fault.
+// server fault. v2's /package keeps the same property: check_area caps the
+// requested area at 0.04 sq deg, and this span stays well inside that.
 const MIN_DATA_SPAN = 0.03;
 
 function dataBounds() {
@@ -1095,17 +1178,24 @@ function dataBounds() {
   return L.latLngBounds([c.lat - halfLat, c.lng - halfLon], [c.lat + halfLat, c.lng + halfLon]);
 }
 
-function bboxQuery(b) {
-  return 'xmin=' + b.getWest().toFixed(6) + '&ymin=' + b.getSouth().toFixed(6) +
-    '&xmax=' + b.getEast().toFixed(6) + '&ymax=' + b.getNorth().toFixed(6);
-}
-
 // A browser *navigation* to this is not subject to CORS, which is why the
-// download route works where fetch cannot: /josm_data sends no
-// Access-Control-Allow-Origin at all.
+// download route works where fetch cannot: v2 sends no
+// Access-Control-Allow-Origin on anything, not even the tiles.
+//
+// /package is v2's /josm_data: it answers a GeoJSON FeatureCollection of what
+// is still unmatched inside the bbox — addresses as Points with addr:* ready
+// and buildings as Polygons plus MultiPolygons with OSM tag properties — which
+// parseGeoJson ingests unchanged. It carries no per-object id, so those
+// candidates key on their geometry hash like the old clipped-ring fallback did;
+// the ids that decision keys prefer exist only in the tiles. Datasets mirror
+// the registries v2 serves; sending all three matches what /josm_data shipped.
+// The server answers the area cap with a 400, so MIN_DATA_SPAN matters here
+// and no route can widen past 0.2°.
 function areaDataUrl() {
-  return apiBase() + '/josm_data?filter_by=bbox' +
-    '&layers=addresses_to_import,buildings_to_import&' + bboxQuery(dataBounds());
+  const b = dataBounds();
+  const bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].join(',');
+  return apiBase() + '/package?bbox=' + encodeURIComponent(bbox) +
+    '&datasets=bdot10k,egib,prg';
 }
 
 // Judged on the widened bounds, since those are what actually gets requested.
@@ -1168,8 +1258,12 @@ async function ingest(list, label) {
 
   for (const c of list) {
     c.centroid = centroid(c.ring);
+    // The registry prefix separates the id spaces: bdot10k ids are uuids and
+    // egib ids are TERYT file references, so a collision is conceivable.
+    // `bdot` (one token, not `bdot10k`) keeps decisions made against v1's
+    // lokalnyid uuids valid, because those are the same id space.
     c.key = c.srcId
-      ? (c.kind === 'building' ? 'bdot:' : 'prg:') + c.srcId
+      ? (c.kind === 'building' ? (c.reg || 'bdot') : 'prg') + ':' + c.srcId
       : hash(c.kind + '|' + c.centroid[0].toFixed(6) + ',' + c.centroid[1].toFixed(6) + '|' +
         (c.tags['addr:housenumber'] || '') + (c.tags['addr:street'] || ''));
     c.orig = c.ring.map((p) => p.slice());
@@ -1189,17 +1283,16 @@ async function ingest(list, label) {
 }
 
 async function reportReject(c) {
-  if (!S.reportRejects || !c.srcId) return;
-  const path = c.kind === 'building' ? '/sc/proposed_buildings/report' : '/sc/proposed_addresses/report';
+  if (!S.reportRejects || !c.report) return;
   try {
-    // Deliberately tries: 1. This removes the object for every other mapper,
-    // so a bounded timeout is welcome but re-sending on a doubtful failure is
+    // Deliberately tries: 1. This vetoes the object for every other mapper, so
+    // a bounded timeout is welcome but re-sending on a doubtful failure is
     // not — a silent no-op is the safer outcome of the two.
-    await fetchRetry(apiBase() + path, {
+    await fetchRetry(apiBase() + '/report', {
       tries: 1, timeout: 15000,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify([String(c.srcId)]),
+      body: JSON.stringify({ objects: [c.report] }),
     });
   } catch (err) {
     console.warn('reject report failed', err);
@@ -2516,18 +2609,20 @@ function paintChrome() {
   $('stepLbl').textContent = fmt(S.driftStep, 2).replace(/0$/, '') + ' m';
 }
 
-// How old the source geometry is, and whether BDOT thought the building was
-// still going up. Neither is an OSM tag and neither is uploaded, but both change
-// what a reviewer should conclude from the imagery:
+// How old the source geometry is, and whether the registry thought the building
+// was still going up. Neither is an OSM tag and neither is uploaded, but both
+// change what a reviewer should conclude from the imagery:
 //
-//  - `aktualnosc_geometrii` is the currency date of the outline. Across 644
-//    sampled buildings roughly half were 2018 or older and a third dated from
-//    2015, so a building demolished for a road built since then is still in the
-//    data, correctly, as far as BDOT is concerned. BDOT10k is not the cadastre
-//    (EGiB), and the two disagree.
-//  - `status_bdot = w budowie` means it was under construction at survey time.
-//    It may now be finished, altered, or never completed, and `building=yes` is
-//    probably the wrong tag for it.
+//  - On v1 the tiles carried `aktualnosc_geometrii`, the currency date of the
+//    outline — across 644 sampled buildings roughly half were 2018 or older and
+//    a third dated from 2015, so a building demolished for a road built since
+//    then was still in the data, correctly, as far as BDOT is concerned. v2
+//    dropped per-object currency from the tiles (only the z5-13 aggregate bins
+//    carry recent-change dates), so this shock-absorber is honestly blank now
+//    rather than faking a year; treat undated geometry as possibly stale.
+//  - `KATEGORIAISTNIENIA` (v2's `status_bdot`) = `w budowie` means it was under
+//    construction at survey time. It may now be finished, altered, or never
+//    completed, and `building=yes` is probably the wrong tag for it.
 const YEAR_MS = 365.25 * 24 * 3600e3;
 
 function paintSrcAge(c) {
@@ -3421,8 +3516,8 @@ function bindUI() {
       toast('Popup blocked — open this URL in a new tab: ' + url, 'warn');
       return;
     }
-    toast('Asked for a ' + spanKm(b) + ' km box. If it is just <osm version="0.6"/> ' +
-      'there is nothing pending here — pan elsewhere and try again.');
+    toast('Asked for a ' + spanKm(b) + ' km box. package.geojson with no features ' +
+      'means nothing pending here — pan elsewhere and try again.');
   };
   $('pasteBtn').onclick = loadPasted;
   $('randomBtn').onclick = loadRandom;
