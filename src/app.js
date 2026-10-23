@@ -993,7 +993,11 @@ async function clusterJump() {
     const j = Math.floor(Math.random() * (i + 1));
     const t = order[i]; order[i] = order[j]; order[j] = t;
   }
-  for (const [x, y] of order.slice(0, 3)) {
+  // Try every tile, not just 3 — Poland needs about 9 z6 tiles for full
+  // coverage, and drawing only 3 at random meant "Take me somewhere" failed
+  // whenever the empty tiles happened to be picked first. We break on the
+  // first tile that has features, so we rarely fetch them all.
+  for (const [x, y] of order) {
     const ck = 'clusters/' + CLUSTER_Z + '/' + x + '/' + y;
     let buf = null;
     const hit = await dbGet('ctx', ck).catch(() => null);
@@ -2973,6 +2977,15 @@ async function paintUser() {
   $('userBtn').className = t ? 'ok' : '';
 }
 
+// Show the build id in the top strip so you can tell at a glance whether
+// you're running the deployed build (matches Settings → Run diagnostics)
+function paintBuildId() {
+  const el = $('buildId');
+  if (!el) return;
+  el.textContent = typeof BUILD_ID === 'string' ? 'v:' + BUILD_ID : 'v:dev';
+  el.title = 'Build id — matches Settings → Run diagnostics';
+}
+
 // The tags every changeset carries. Built as pairs so the review sheet can show
 // exactly what will be sent instead of describing it.
 //
@@ -3529,6 +3542,7 @@ function bindUI() {
   bindUI();
   await finishLogin();
   await paintUser();
+  paintBuildId();
   await refreshQueueBadge();
   const n = await evictExpired();
   if (n) console.log('evicted', n, 'stale cache entries');
