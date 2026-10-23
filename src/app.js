@@ -648,6 +648,9 @@ async function diagnose() {
       // Separate "your phone has no signal" from "this endpoint's headers are
       // wrong", which the raw rejection cannot distinguish.
       if (err.kind === 'network') line('            → ' + await corsOrNetwork(url));
+      // A probe reads the way fetches do, but not every feature does; where a
+      // failure here does not mean the feature is dead, say so.
+      if (o.failNote) line('            → ' + o.failNote);
     }
     for (const n of notes) line('            · ' + n);
   };
@@ -670,7 +673,13 @@ async function diagnose() {
     async (r) => {
       const j = await r.json();
       return 'ok  ' + ((j.features || []).length) + ' features geojson';
-    }, { tries: 2, timeout: 30000 });
+    }, { tries: 2, timeout: 30000,
+      // GET /package fails this probe with the others under v2's CORS-less
+      // headers, but the app never fetches it: the button is a navigation,
+      // which no CORS policy restricts. The data route works; only the probe's
+      // own read does not.
+      failNote: 'the "Get this area\'s data" button navigates instead of ' +
+        'fetching, so it downloads the file even when this probe fails' });
   await probe('overpass', 'https://overpass-api.de/api/interpreter?data=' +
     encodeURIComponent('[out:json][timeout:10];node(52.20,21.00,52.201,21.001);out count;'),
     async (r) => { await r.json(); return 'ok'; },
