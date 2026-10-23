@@ -902,9 +902,19 @@ function ringSignedArea(r) {
 }
 
 async function tileBytes(z, x, y, tries) {
-  const r = await fetchOk(apiBase() + '/tiles/' + z + '/' + x + '/' + y + '.pbf',
-    { tries: tries || 3, timeout: 20000 });
-  return new Uint8Array(await r.arrayBuffer());
+  // A 404 on a tile means "no data here" (empty tile at this zoom), not that
+  // the server is unreachable. Return an empty buffer so fetchAreaTiles treats
+  // it as a tile with no buildings rather than counting it as a failure.
+  try {
+    const r = await fetchOk(apiBase() + '/tiles/' + z + '/' + x + '/' + y + '.pbf',
+      { tries: tries || 3, timeout: 20000 });
+    return new Uint8Array(await r.arrayBuffer());
+  } catch (err) {
+    if (err.kind === 'http' && String(err.message).match(/^HTTP 404$/)) {
+      return new Uint8Array(0);
+    }
+    throw err;
+  }
 }
 
 // Buildings for an area, straight from the vector tiles. Addresses are not
@@ -983,7 +993,11 @@ async function clusterJump() {
     const j = Math.floor(Math.random() * (i + 1));
     const t = order[i]; order[i] = order[j]; order[j] = t;
   }
-  for (const [x, y] of order.slice(0, 3)) {
+  // Try every tile, not just 3 — Poland needs about 9 z6 tiles for full
+  // coverage, and drawing only 3 at random meant "Take me somewhere" failed
+  // whenever the empty tiles happened to be picked first. We break on the
+  // first tile that has features, so we rarely fetch them all.
+  for (const [x, y] of order) {
     const ck = 'clusters/' + CLUSTER_Z + '/' + x + '/' + y;
     let buf = null;
     const hit = await dbGet('ctx', ck).catch(() => null);
@@ -2963,6 +2977,15 @@ async function paintUser() {
   $('userBtn').className = t ? 'ok' : '';
 }
 
+// Show the build id in the top strip so you can tell at a glance whether
+// you're running the deployed build (matches Settings → Run diagnostics)
+function paintBuildId() {
+  const el = $('buildId');
+  if (!el) return;
+  el.textContent = typeof BUILD_ID === 'string' ? 'v:' + BUILD_ID : 'v:dev';
+  el.title = 'Build id — matches Settings → Run diagnostics';
+}
+
 // The tags every changeset carries. Built as pairs so the review sheet can show
 // exactly what will be sent instead of describing it.
 //
@@ -3519,6 +3542,7 @@ function bindUI() {
   bindUI();
   await finishLogin();
   await paintUser();
+  paintBuildId();
   await refreshQueueBadge();
   const n = await evictExpired();
   if (n) console.log('evicted', n, 'stale cache entries');
