@@ -3406,10 +3406,19 @@ function bindUI() {
   $('loadAreaBtn').onclick = loadArea;
   $('lcBtn').onclick = loadLandCover;
   paintLcStatus();
-  $('getDataBtn').onclick = () => {
+  $('getDataBtn').onclick = async () => {
     if (areaTooBig()) return;
     const b = dataBounds();
-    window.open(areaDataUrl(), '_blank', 'noopener');
+    const url = areaDataUrl();
+    const win = window.open(url, '_blank', 'noopener');
+    if (!win) {
+      // Popup blocked — fall back to copying the URL so the user can open it
+      // manually. Can't rely on clipboard API in all contexts, so show the URL
+      // in a prompt they can copy.
+      try { await navigator.clipboard.writeText(url); } catch (_) {}
+      toast('Popup blocked — open this URL in a new tab: ' + url, 'warn');
+      return;
+    }
     toast('Asked for a ' + spanKm(b) + ' km box. If it is just <osm version="0.6"/> ' +
       'there is nothing pending here — pan elsewhere and try again.');
   };
