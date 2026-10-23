@@ -37,11 +37,15 @@ const wasm = readFileSync(join(root, 'core.wasm'));
 const leafletJs = readFileSync(join(root, 'node_modules/leaflet/dist/leaflet.js'), 'utf8')
   .replace(/\/\/# sourceMappingURL=.*/g, '');
 const leafletCss = readFileSync(join(root, 'node_modules/leaflet/dist/leaflet.css'), 'utf8');
-const shell = readFileSync(src('shell.html'), 'utf8');
-const app = readFileSync(src('app.js'), 'utf8');
+const shell = readFileSync(src('shell.html'), 'utf8').replace(/\r\n/g, '\n');
+const app = readFileSync(src('app.js'), 'utf8').replace(/\r\n/g, '\n');
 
 // Derived from the sources rather than from the built output, so it can be
-// embedded in that output without chasing its own hash.
+// embedded in that output without chasing its own hash. Line endings are
+// normalised first: the CI deploy builds on Linux with a LF checkout, this
+// script usually runs on a Windows checkout, and an unnormalised hash made the
+// same sources stamp two different ids — "check the deployed build id matches"
+// failed spuriously every time.
 const buildId = createHash('sha256')
   .update(app).update(shell).update(leafletJs).update(leafletCss).update(wasm)
   .digest('hex').slice(0, 12);
