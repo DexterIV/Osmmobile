@@ -1027,7 +1027,9 @@ async function clusterJump() {
     for (const p of picks) { r -= p.w; if (r <= 0) { chosen = p; break; } }
     return tilePointToLatLon(CLUSTER_Z, x, y, chosen.pt[0], chosen.pt[1], L.extent);
   }
-  return null;
+  // No cluster tile had usable features — fall back to the map's default
+  // centre so at least the map moves somewhere the user can start from.
+  return [52.2, 21.0];
 }
 
 async function loadArea() {
