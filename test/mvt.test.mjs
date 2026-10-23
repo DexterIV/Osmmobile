@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 
 const src = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
 const from = src.indexOf('function pbVarint(');
-const to = src.indexOf('const TILE_TAGS =');
+const to = src.indexOf('function ringSignedArea(');
 assert.ok(from > 0 && to > from, 'could not locate the MVT decoder in src/app.js');
 
 const make = new Function('TextDecoder', 'Math',
@@ -144,6 +144,56 @@ t('decodes the captured z6 cluster tile used to find work', () => {
   }
   assert.ok(weighted > 400, 'weights should exceed one per cluster');
   assert.ok(maxw > 1, 'expected at least one multi-object cluster to weight towards');
+});
+
+// --- real v2 tiles (captured from the live server, 2026-10-23) --------------
+t('decodes the v2 agg_cells tile that replaces buildings_clustered', () => {
+  const layers = M.mvtDecode(fixture('tile-z6-agg-cells.mvt'));
+  assert.deepEqual(Object.keys(layers), ['agg_cells']);
+  const L = layers.agg_cells;
+  assert.ok(L.features.length > 50, 'a Polish z6 tile holds many bins, got ' + L.features.length);
+  let weighted = 0, maxw = 0;
+  for (const fb of L.features) {
+    const f = M.mvtFeature(fb, L);
+    assert.equal(f.type, 3, 'agg bins are polygons');
+    const w = (Number(f.props.n_bdot10k) || 0) + (Number(f.props.n_egib) || 0);
+    if (!w) continue;
+    assert.ok(Number(f.props.t_total) >= Number(f.props.n_total),
+      'totals must cover the unmatched counts');
+    weighted += w;
+    maxw = Math.max(maxw, w);
+  }
+  assert.ok(weighted > 10000, 'real unmatched work must exist nationally');
+  assert.ok(maxw > 1, 'expected at least one bin to weight towards');
+});
+
+t('v2 z14 unmatched buildings carry a parseable tags string', () => {
+  const L = M.mvtDecode(fixture('tile-z14-v2-buildings.mvt')).buildings;
+  assert.ok(L, 'expected the unmatched buildings layer');
+  let bdot = 0, egib = 0;
+  for (const fb of L.features) {
+    const f = M.mvtFeature(fb, L);
+    assert.equal(f.type, 3, 'buildings are polygons');
+    assert.ok(f.props.id, 'v2 ids must survive for decisions/report');
+    if (f.props.source === 'bdot10k') bdot++;
+    else if (f.props.source === 'egib') egib++;
+    else assert.fail('unknown registry: ' + f.props.source);
+    const s = String(f.props.tags || '');
+    for (const kv of s.split(';')) {
+      const i = kv.indexOf('=');
+      if (i > 0) assert.ok(kv.slice(0, i) && kv.slice(i + 1), 'malformed tag ' + JSON.stringify(kv));
+    }
+  }
+  assert.ok(bdot > 0 && egib > 0, 'this tile straddles both registries, got ' +
+    bdot + ' bdot10k / ' + egib + ' egib');
+});
+
+t('v2 z14 addresses exist and carry addr tags', () => {
+  const L = M.mvtDecode(fixture('tile-z14-v2-buildings.mvt')).addresses;
+  assert.ok(L, 'addresses exist in the pyramid as of v2 — the v1 note about their absence is dead');
+  const a = M.mvtFeature(L.features[0], L);
+  assert.ok(a.props.lokalny_id, 'addresses report by lokalny_id');
+  assert.ok(L.keys.includes('addr:housenumber'), 'addr tags travel ready-to-upload');
 });
 
 t('a truncated tile is rejected rather than silently mis-decoded', () => {

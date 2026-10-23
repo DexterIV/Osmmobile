@@ -51,65 +51,63 @@ That check exists because a missing id previously shipped as a runtime crash.
 
 Base: `https://budynki.openstreetmap.org.pl`.
 
-> **Correction, 2026-08-16.** This section used to claim that every nginx location sets
-> `Access-Control-Allow-Origin: *`, so browser-side fetching works without a proxy, and that this
-> "was checked in their `conf/nginx.conf`, not assumed". Reading the config was not the same as
-> observing the responses, and the conclusion was wrong. **A browser cannot fetch `/sc/*`,
-> `/josm_data` or `/random/` at all.** See *CORS reality* below.
+> **Superseded, 2026-10-23.** Everything in this section described **v1**, the
+> Python stack. On 2026-10-11 upstream replaced it wholesale ("OSM Polska
+> budynki/adresy v2", openstreetmap-polska/osmpbudynkiv2, a Rust server). v1's
+> endpoints are not degraded — they are **gone**: `/layers/`, `/sc/*`,
+> `/josm_data` and `/random/` all answer 404. The current contract follows. See
+> *CORS reality, v2 era* below for what v1 got right that v2 stopped doing.
 
 | endpoint | purpose |
 |---|---|
-| `GET /sc/proposed_buildings?xmin&ymin&xmax&ymax` | candidate buildings, GeoJSON |
-| `GET /sc/proposed_addresses?xmin&ymin&xmax&ymax` | candidate addresses, GeoJSON |
-| `POST /sc/proposed_buildings/report` | body is a JSON array of ids; removes them for everyone |
-| `POST /sc/proposed_addresses/report` | same |
-| `GET /random/` | `{lon, lat}`, server-weighted ~95% toward areas with many pending objects |
-| `GET /layers/` | available layer ids |
-| `GET /josm_data?filter_by=bbox&layers=addresses_to_import,buildings_to_import&...` | `.osm` XML, fallback path |
-| `/orto` | their reverse proxy in front of the GUGiK ORTO WMS. **Its CORS headers are broken — see below** |
-| `GET /tiles/{z}/{x}/{y}.pbf` | **the only candidate source a browser can read.** MVT, one CORS header |
+| `GET /tiles/{z}/{x}/{y}` | **the only candidate source. MVT, no `.pbf` suffix** — the router parses path segments as integers and answers `.pbf` with `400 "cannot parse value \`20.pbf\` to a u32"` |
+| `GET /package?bbox=w,s,e,n&datasets=bdot10k,egib,prg` | the old `/josm_data`: a GeoJSON FeatureCollection of everything still unmatched in the box. Addresses as Points with `addr:*`, buildings as Polygons/MultiPolygons with OSM tag properties. **No per-object id.** Area-capped at `0.04 sq deg` |
+| `POST /report` | `{"objects":[{source,key}]}` — vetoes an object out of the unmatched sets for everyone; the object returns on its own when its government record changes |
+| `GET /status` | server config and job log; `config.package.max_area_sq_deg`, `config.reports.max_objects_per_request`, job health |
+| `GET /updates` | recent OSM-matching FeatureJSON (changes within `max_age_days`) |
+| `/orto/` | dead for our purposes; imagery comes from direct GUGiK WMS/WMTS |
+| `GET /random/`, `GET /layers/`, `/sc/*`, `/josm_data` | **404 — removed by the v2 rewrite, not flaky** |
 
-### Vector tiles are the working data path
+### Vector tiles are the working data path (v2)
 
-Because `/sc/*` and `/josm_data` are unreadable from a browser (below), candidates come from the
-vector tiles instead. `/tiles/{z}/{x}/{y}.pbf` sends `Access-Control-Allow-Origin` exactly once and
-carries the same BDOT10k geometry with OSM-ready tags. The served pyramid, checked directly:
+Candidates come from the vector tiles. The served pyramid, measured from live tiles 2026-10-23:
 
 | zoom | layer | contents |
 |---|---|---|
-| ≤10 | `buildings_clustered` | points with `no_of_points`; used to find somewhere with work |
-| 11–12 | `buildings_centroids` | points, no properties |
-| 13–14 | `buildings` | full polygons plus tags |
+| 5–11 | `agg_cells` | aggregated bins: unmatched counts `n_bdot10k`/`n_egib`/`n_prg`, totals `t_*`, ratios `r_*`, recent-change dates `ts_*` per registry. Polygons. Used to find somewhere with work |
+| 12–13 | `points` | one point per still-unmatched object, same counts |
+| 14 | `buildings` (unmatched) / `buildings_all` | full polygons; unmatched carries a `tags` property of `key=value` pairs joined by `;`, plus `source:building`, `building:levels`, BDOT/EGiB columns (`KATEGORIAISTNIENIA`, `funkcja_*`, `approx_area_m2`, `id` — uuid for bdot10k, TERYT refs like `141805_2.0026.364_BUD` for egib) |
+| 14 | `addresses` / `addresses_all` | PRG addresses as points with ready `addr:*` tags and `lokalny_id` |
 
 `maxzoom` is **14** — z15 and above return 404. An earlier note here read those 404 pages as tiles
 because it only looked at response size, not status; always check the status.
 
-- **Tags.** The layer carries BDOT metadata (`status_bdot`, `funkcja_*`, `aktualnosc_*`, `lokalnyid`)
-  beside genuine OSM tags. Only `building`, `amenity`, `man_made`, `leisure`, `historic`, `tourism`
-  and `building_levels`→`building:levels` are promoted, plus `source:building=BDOT`, which is exactly
-  what `/josm_data` emits for the same object. `lokalnyid` becomes `srcId`, so a verdict reached
-  through tiles and one reached through a file key on the same `bdot:<id>`.
+- **Tags.** v2 curates the OSM tags itself into the single `tags` property (`building=detached`,
+  `building=yes;fixme=EGiB: budynki transportu i łączności`) — the v1 whitelist client-side is gone,
+  whatever upstream emits is what ships. `source:building` is now per-feature `BDOT` **or** `EGiB`.
 - **Precision.** MVT quantises to a 4096 grid, so at z14 outlines sit on a **~37 cm** grid (±18 cm
   per vertex). That is below BDOT10k's own positional accuracy, but it is not the official geometry,
-  and the app says `±37 cm from tiles` on every load rather than hiding it. Exact geometry needs the
-  `/josm_data` download route.
+  and the app says `±37 cm from tiles` on every load rather than hiding it. Exact geometry comes
+  from the `/package` download route, which the file/paste path ingests via `parseGeoJson`.
 - **Clipping.** MVT clips polygons at tile edges. About 4.6% of features touch an edge (10 of 217
-  sampled); deduplicating by `lokalnyid` across neighbouring tiles recovers most, because a polygon
+  sampled on v1); deduplicating by `id` across neighbouring tiles recovers most, because a polygon
   cut in one tile is usually whole in the next. Any that remain cut are **skipped, not uploaded** — a
   clipped outline is the wrong shape, and the count is reported.
-- **No addresses.** The upstream style references `addresses`, `addresses_clustered` and
-  `addresses_geomonly`, but **none are generated** — zero address features across 40 tiles in ten
-  cities. Addresses are buildings-only territory for the in-app path; they need the file or paste
-  route. Re-check this before assuming addresses are unavailable forever.
-- `/random/` is **not used**. `buildings_clustered` answers the same question, weighted by how much
-  work is actually there, from a readable endpoint. One z6 tile is ~110 KB, covers a large slice of
+- **Addresses now exist** (v1 had none). The z14 `addresses` layer carries unmatched PRG points,
+  ready-tagged. The in-app tile ingest is still buildings-only; addresses reach review through the
+  `/package` route and are keyed `prg:<lokalny_id>`.
+- **No per-object currency dates.** v1 carried `aktualnosc_geometrii` per building; v2 only keeps
+  recent government-change dates in the z5-13 aggregate bins. The `srcAge` strip shows blank and
+  undated geometry is treated as possibly stale rather than lying about a year.
+- `/random/` is **not used**. `agg_cells` answers the same question, weighted by how much work is
+  actually there (`n_bdot10k + n_egib`; `n_prg` is excluded because the tile ingest is
+  buildings-only), target being the bin centroid. One z6 tile is ~110 KB, covers a large slice of
   Poland, and is cached in the `ctx` store, so it is fetched one at a time rather than country-wide.
 
-GeoJSON feature shape is `properties: { id, tags }` where `id` is the upstream `lokalnyid` and
-`tags` are already OSM-ready. The decision store keys on `bdot:<id>` / `prg:<id>` so a verdict
-sticks to the object rather than to a coordinate hash.
-
-`LAYERS=Raster` is confirmed from their `map.js`. Not a guess.
+The decision store keys on `bdot:<uuid>`, `egib:<teryt-ref>` (split by registry in v2; a plain
+`bdot:` keeps v1-era decisions valid because bdot10k ids are the same uuid space) and `prg:<id>`,
+so a verdict sticks to the object rather than to a coordinate hash. `/package` features carry no id,
+so they key on a geometry+housenumber hash like v1's clipped-ring fallback did.
 
 ## What is already in OSM — the review's other half
 
@@ -316,6 +314,45 @@ replaces the old, actively misleading "blocked or offline" for this case.
 
 The upstream fix is theirs: an `add_header` at both `server` and `location` level, or nginx and the
 application both adding it. Worth reporting to gugik2osm.
+
+### CORS reality, v2 era — measured 2026-10-23
+
+Upstream's 2026-10 Rust rewrite ("OSM Polska budynki/adresy v2",
+`openstreetmap-polska/osmpbudynkiv2`, server version `0.4.1`) changed the CORS posture completely.
+Counted with `curl -D -`, always pairing status and headers in one request, against the app origin
+`Origin: https://dexteriv.github.io`:
+
+| request | status | `Access-Control-Allow-Origin` |
+|---|---|---|
+| `GET /tiles/6/34/20` | 200, real MVT | **none** |
+| same, browser-like UA + `Sec-Fetch-Mode: cors` | 200 | **none** |
+| `GET /status`, `GET /updates` | 200 | **none** |
+| `OPTIONS /tiles/6/34/20` | 405, `Allow: GET,HEAD` | **none** |
+| `GET /tiles/6/34/20.pbf` (v1 format) | 400 "cannot parse … u32" | none (moot) |
+| `GET /layers/`, `/random/`, `/sc/*`, `/josm_data` | 404 | none (moot) |
+
+**v2 sends no CORS header anywhere.** v1 sent `*`; the rewrite dropped it because their own page is
+same-origin and every third-party consumer broke silently. `grep` across their tree for
+"Access-Control-Allow-Origin" returns nothing — this is not a config quirk, the header is simply
+never produced. A no-cors fetch resolves, so diagnostics can still say "server answered, headers
+faulty".
+
+Consequences, and what was done about each:
+
+- **Cross-origin `fetch` to budynki is impossible** until either upstream sends the header again or
+  the app is pointed at a mirror that does. The app cannot conjure one; Settings → API base already
+  accepts a mirror URL. Diagnostics explains this in place of the old per-endpoint probes.
+- **The `/package` download route still works** — a browser *navigation* faces no CORS policy and
+  `parseGeoJson` already ingests the GeoJSON v2 answers with. "Get this area's data" now downloads
+  `package.geojson` (addresses and buildings, no ids).
+- **Imagery is untouched**: direct GUGiK WMS/WMTS sends its own CORS headers and never routed
+  through budynki anyway.
+- A mirror of our own (Cloudflare Worker or any header-adding reverse proxy) is the honest fix;
+  the privacy stance recorded above still applies to *third-party* proxies, not to a host the
+  owner controls.
+
+Older v1 sections below `CORS reality, measured 2026-08-16` describe endpoints that **no longer
+exist** as of 2026-10-23. Kept for the reasoning, not the facts.
 
 ### Candidates are sparse — small bboxes return nothing
 
