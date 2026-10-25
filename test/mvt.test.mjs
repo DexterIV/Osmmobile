@@ -17,7 +17,7 @@ assert.ok(from > 0 && to > from, 'could not locate the MVT decoder in src/app.js
 
 const make = new Function('TextDecoder', 'Math',
   'const TD = new TextDecoder();' + src.slice(from, to) +
-  '; return { mvtDecode, mvtFeature, mvtRings, tileXY, tilePointToLatLon, tilesCovering, tileQuantCm, pbZigzag };');
+  '; return { mvtDecode, mvtFeature, mvtRings, tileXY, tilePointToLatLon, tilesCovering, tileQuantCm, pbZigzag, addressTagsFromTile };');
 const M = make(TextDecoder, Math);
 
 const fixture = (n) => new Uint8Array(readFileSync(new URL('./fixtures/' + n, import.meta.url)));
@@ -196,6 +196,32 @@ t('v2 z14 addresses exist and carry addr tags', () => {
   assert.ok(L.keys.includes('addr:housenumber'), 'addr tags travel ready-to-upload');
 });
 
+t('address tags upload addr:* only, never the PRG metadata columns', () => {
+  const L = M.mvtDecode(fixture('tile-z14-v2-buildings.mvt')).addresses;
+  for (const fb of L.features) {
+    const p = M.mvtFeature(fb, L).props;
+    const tags = M.addressTagsFromTile(p);
+    for (const k of Object.keys(tags)) {
+      assert.ok(k.startsWith('addr:') || k === 'source:addr',
+        'not an OSM address tag: ' + k);
+    }
+    assert.equal(tags['addr:housenumber'], p['addr:housenumber']);
+    // The source columns that sit beside the tags in the tile must not upload.
+    for (const k of ['lokalny_id', 'numer_porzadkowy', 'ulica', 'miejscowosc',
+      'kod_pocztowy', 'wazny_od_lub_data_nadania', 'teryt_gmina', 'gmina']) {
+      assert.ok(!(k in tags), 'metadata leaked into an upload: ' + k);
+    }
+  }
+});
+
+t('address tags skip empty values and metadata-only rows', () => {
+  const tags = M.addressTagsFromTile({
+    lokalny_id: 'abc', numer_porzadkowy: '7', teryt_gmina: '1418052',
+    'addr:housenumber': '', 'addr:street': undefined,
+  });
+  assert.deepEqual(tags, {}, 'nothing uploadable in a metadata-only row');
+});
+
 t('a truncated tile is rejected rather than silently mis-decoded', () => {
   const full = fixture('tile-z14-buildings.pbf');
   // Cutting mid-message must throw or yield nothing usable — never a plausible
@@ -212,5 +238,44 @@ t('a truncated tile is rejected rather than silently mis-decoded', () => {
   }
   assert.equal(threw + empty, 5, 'every truncation must either throw or degrade safely');
 });
+
+// fetchAreaTiles is async and reaches outside the decoder slice above, so it
+// gets the same treatment with tileBytes stubbed: the addresses layer has to
+// arrive as reportable, prg-keyed candidates, not merely as decodable props.
+{
+  const rs = src.indexOf('function ringSignedArea(');
+  const tb = src.indexOf('async function tileBytes(');
+  const fa = src.indexOf('async function fetchAreaTiles(');
+  const cj = src.indexOf('// Weighted pick from agg_cells');
+  assert.ok(rs >= to && tb > rs && fa > tb && cj > fa, 'could not locate fetchAreaTiles');
+  const fetchAreaTiles = new Function('TextDecoder', 'Math', 'TILE_DATA_Z', 'tileBytes',
+    'const TD = new TextDecoder();' + src.slice(from, to) + src.slice(rs, tb) +
+    src.slice(fa, cj) + '; return fetchAreaTiles;')(
+    TextDecoder, Math, 14, async () => fixture('tile-z14-v2-buildings.mvt'));
+
+  // Two adjacent tiles covering one small box: the same fixture bytes come back
+  // for both, so this also exercises the cross-tile dedupe.
+  const bounds = {
+    getNorth: () => 52.214, getSouth: () => 52.201,
+    getWest: () => 20.984, getEast: () => 21.005,
+  };
+  const res = await fetchAreaTiles(bounds);
+  const addrs = res.list.filter((c) => c.kind === 'address');
+  assert.ok(addrs.length, 'addresses must reach the candidate list');
+  assert.equal(addrs.length, 7, 'one candidate per PRG row, deduped across tiles');
+  assert.equal(new Set(addrs.map((c) => c.srcId)).size, addrs.length, 'duplicate ids collapsed');
+  for (const c of addrs) {
+    assert.equal(c.ring.length, 1, 'an address is a single-point ring');
+    assert.equal(c.ring[0].length, 2);
+    assert.ok(c.srcId, 'lokalny_id travels as srcId, so the verdict keys prg:<id>');
+    assert.deepEqual(c.report, { source: 'prg', key: { lokalny_id: c.srcId } });
+    for (const k of Object.keys(c.tags)) {
+      assert.ok(k.startsWith('addr:') || k === 'source:addr', k + ' is not an address tag');
+    }
+  }
+  assert.ok(res.list.some((c) => c.kind === 'building'), 'buildings still load alongside');
+  console.log('  ok  tile ingest builds prg-keyed address candidates');
+  pass++;
+}
 
 console.log('\nmvt: ' + pass + ' groups passed');
