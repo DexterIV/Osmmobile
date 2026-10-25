@@ -93,21 +93,30 @@ because it only looked at response size, not status; always check the status.
   sampled on v1); deduplicating by `id` across neighbouring tiles recovers most, because a polygon
   cut in one tile is usually whole in the next. Any that remain cut are **skipped, not uploaded** — a
   clipped outline is the wrong shape, and the count is reported.
-- **Addresses now exist** (v1 had none). The z14 `addresses` layer carries unmatched PRG points,
-  ready-tagged. The in-app tile ingest is still buildings-only; addresses reach review through the
-  `/package` route and are keyed `prg:<lokalny_id>`.
+- **Addresses are ingested now** (v1 had none). The z14 `addresses` layer carries unmatched PRG
+  points with ready `addr:*` tags and a `lokalny_id`; `fetchAreaTiles` loads them alongside the
+  buildings and the load reports both counts. Only `addr:*` and `source:addr` upload — the PRG
+  columns beside them (`numer_porzadkowy`, `ulica`, `miejscowosc`, `gmina`, `teryt_gmina`,
+  `wazny_od_lub_data_nadania`, ...) are source metadata, and `lokalny_id` is the decision and
+  `/report` key, never a tag. `/package` emits exactly that property set, so both routes upload the
+  same tags for the same address. A point on a shared tile edge can arrive from both neighbours, so
+  duplicates collapse by id across the whole fetch; a row without `addr:housenumber` is skipped
+  rather than uploaded as a nameless node.
 - **No per-object currency dates.** v1 carried `aktualnosc_geometrii` per building; v2 only keeps
   recent government-change dates in the z5-13 aggregate bins. The `srcAge` strip shows blank and
   undated geometry is treated as possibly stale rather than lying about a year.
 - `/random/` is **not used**. `agg_cells` answers the same question, weighted by how much work is
-  actually there (`n_bdot10k + n_egib`; `n_prg` is excluded because the tile ingest is
-  buildings-only), target being the bin centroid. One z6 tile is ~110 KB, covers a large slice of
-  Poland, and is cached in the `ctx` store, so it is fetched one at a time rather than country-wide.
+  actually there (`n_bdot10k + n_egib + n_prg`; measured on one z6 tile over central Poland,
+  addresses are 0.31 M against 1.34 M buildings and 842 of 854 occupied bins hold both, so they add
+  weight to the same bins rather than steering the jump to address-only areas), target being the bin
+  centroid. One z6 tile is ~110 KB, covers a large slice of Poland, and is cached in the `ctx`
+  store, so it is fetched one at a time rather than country-wide.
 
 The decision store keys on `bdot:<uuid>`, `egib:<teryt-ref>` (split by registry in v2; a plain
 `bdot:` keeps v1-era decisions valid because bdot10k ids are the same uuid space) and `prg:<id>`,
-so a verdict sticks to the object rather than to a coordinate hash. `/package` features carry no id,
-so they key on a geometry+housenumber hash like v1's clipped-ring fallback did.
+so a verdict sticks to the object rather than to a coordinate hash. Tile addresses bring
+`lokalny_id`, so they key `prg:<lokalny_id>` and survive across sessions. `/package` features carry
+no id, so they key on a geometry+housenumber hash like v1's clipped-ring fallback did.
 
 ## What is already in OSM — the review's other half
 
@@ -292,9 +301,9 @@ fatal to `fetch`, and retrying cannot help where the fault is deterministic — 
 single attempt. Consequences:
 
 - Candidate fetching over `/sc/*` and `/josm_data` is **dead from a browser**, and `fetchArea` — which
-  read both — has been deleted rather than left to fail. Buildings now come from the vector tiles
-  above, which is what makes **Load this area** work at all. For addresses and for exact geometry
-  there are three further routes, none needing a third party: **Get this area's data** (opens the
+  read both — has been deleted rather than left to fail. Buildings and addresses now come from the
+  vector tiles above, which is what makes **Load this area** work at all. For exact geometry there
+  are three further routes, none needing a third party: **Get this area's data** (opens the
   `/josm_data` bbox URL in a new tab — a *navigation* is not CORS-restricted), the **paste box**, and
   the **file picker**. A CORS proxy would restore one-tap loading of everything but would put every
   candidate fetch and the user's IP through someone else's server, so it is deliberately not
@@ -995,8 +1004,9 @@ but that was never measured.** Do not describe the wasm as a large speedup.
   from tiles should require re-fetching that one object's exact outline. At ±18 cm per vertex it is
   well inside BDOT10k's own error, but it is resampled rather than original, and an importer may
   reasonably want the source geometry byte-for-byte.
-- Re-check whether the upstream address tile layers have started being generated; if they have, the
-  in-app path covers addresses too and the paste route becomes a convenience rather than a necessity.
+- **Resolved 2026-10-23: upstream does generate the address tile layers.** `addresses` (z14,
+  unmatched PRG points) is loaded by the tile ingest, so the paste and `/package` routes are a
+  convenience for exact geometry rather than the only way to review addresses.
 - **Resolved 2026-08-19, and the answer was yes.** The flakiness *is* load dependent: five
   back-to-back requests were dropped 5/5 while the identical URLs answered 7/8 minutes later when
   spaced. So the old policy's retries were making it worse, and `TILE_TRIES = 4` is gone — see

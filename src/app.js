@@ -750,8 +750,9 @@ async function diagnose() {
 //   z14      buildings  still-unmatched buildings, full polygons, with a
 //                       `tags` property of `key=value` pairs joined by `;`
 //                       and separate source:building / building:levels
-//            addresses  still-unmatched PRG addresses, addr:* ready — the
-//            *_all       first time addresses exist anywhere in the pyramid
+//            addresses  still-unmatched PRG addresses, points with ready
+//                       addr:* tags and lokalny_id; *_all is the whole PRG
+//                       set, matched or not, and is never loaded
 //
 // What v2 does NOT send is any Access-Control-Allow-Origin. v1 sent `*`; the
 // Rust rewrite dropped it because its own page is same-origin and nobody noticed
@@ -762,8 +763,9 @@ async function diagnose() {
 // still works straight is a plain navigation to /package, which no CORS policy
 // restricts and the file route ingests.
 //
-// Only the subset the buildings layers use: layers, features, string and numeric
-// values, and MoveTo/LineTo/ClosePath geometry. Decoded by hand
+// Only the subset these layers use: layers, features, string and numeric
+// values, and MoveTo/LineTo/ClosePath geometry (addresses are single-point
+// MoveTo features, so they exercise the same ring decoder). Decoded by hand
 // because the build inlines everything into a single file.
 
 const TILE_DATA_Z = 14;   // deepest zoom served, and so the finest geometry
@@ -949,6 +951,25 @@ function tagsFromTile(p) {
   return t;
 }
 
+// v2's z14 `addresses` layer is PRG's still-unmatched set. Buildings arrive with
+// one curated `tags` string; addresses arrive with each tag as its own property
+// beside a pile of source columns (numer_porzadkowy, ulica, teryt_gmina, gmina,
+// wazny_od_lub_data_nadania, ...). Only `addr:*` and `source:addr` are OSM tags —
+// the rest must never upload as tags, and lokalny_id is the report identity and
+// decision key, not an address tag. The /package route emits exactly this set,
+// so both ingest paths upload the same tags for the same address.
+function addressTagsFromTile(p) {
+  const t = {};
+  for (const k of Object.keys(p)) {
+    if (!k.startsWith('addr:') && k !== 'source:addr') continue;
+    const v = p[k];
+    // String(undefined) is "undefined", which would upload as a literal tag.
+    if (v === null || v === undefined) continue;
+    if (String(v)) t[k] = String(v);
+  }
+  return t;
+}
+
 function ringSignedArea(r) {
   let a = 0;
   for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
@@ -973,15 +994,16 @@ async function tileBytes(z, x, y, tries) {
   }
 }
 
-// Buildings for an area, straight from the vector tiles. Since the v2 rewrite
-// the z14 `buildings` layer is the still-unmatched set — matched rows only live
-// in buildings_all, which a review should not load — and per-object currency
-// dates are gone from the tiles (only z5-13 agg_cells carries recency, and only
-// for government changes of the last few days), so srcAge shows nothing rather
-// than a fabricated year. Addresses DO exist now (`addresses`, z14) but the
-// review pipeline ingests buildings only from tiles; addresses still come
-// through the /package/file route via the same button that used to call
-// /josm_data.
+// Unmatched buildings and addresses for an area, straight from the vector
+// tiles. Since the v2 rewrite the z14 `buildings` layer is the still-unmatched
+// set — matched rows only live in buildings_all, which a review should not load
+// — and per-object currency dates are gone from the tiles (only z5-13 agg_cells
+// carries recency, and only for government changes of the last few days), so
+// srcAge shows nothing rather than a fabricated year. The z14 `addresses` layer
+// carries the still-unmatched PRG addresses, points with ready `addr:*` tags and
+// a `lokalny_id`; that id gives them a stable `prg:<id>` decision key and a
+// /report identity, which the /package route's id-less, hash-keyed addresses
+// cannot.
 async function fetchAreaTiles(bounds) {
   const tiles = tilesCovering(bounds, TILE_DATA_Z);
   const got = await Promise.all(tiles.map(async ([x, y]) => {
@@ -993,11 +1015,14 @@ async function fetchAreaTiles(bounds) {
 
   let failed = 0, clipped = 0;
   const best = new Map();
+  // Points are not clipped at tile edges the way polygons are, but a point
+  // sitting exactly on a shared edge can arrive from both tiles, so dedupe on
+  // the PRG id across the whole fetch rather than per tile.
+  const bestAddr = new Map();
   for (const t of got) {
     if (t.err) { failed++; continue; }
     const L = t.layers.buildings;
-    if (!L) continue;
-    for (const fb of L.features) {
+    if (L) for (const fb of L.features) {
       const f = mvtFeature(fb, L);
       if (f.type !== 3) continue;
       for (const ring of f.rings) {
@@ -1047,6 +1072,32 @@ async function fetchAreaTiles(bounds) {
         });
       }
     }
+
+    const A = t.layers.addresses;
+    if (!A) continue;
+    for (const fb of A.features) {
+      const f = mvtFeature(fb, A);
+      if (f.type !== 1 || !f.rings.length || f.rings[0].length !== 1) continue;
+      const tags = addressTagsFromTile(f.props);
+      // A PRG row without a house number cannot be reviewed as an address and
+      // would upload a nameless node. Upstream always emits one; skip malformed
+      // rows rather than inventing a tag for them.
+      if (!tags['addr:housenumber']) continue;
+      const id = f.props.lokalny_id;
+      const [px, py] = f.rings[0][0];
+      const key = id || t.x + '/' + t.y + '/' + px + ',' + py;
+      if (bestAddr.has(key)) continue;
+      bestAddr.set(key, {
+        kind: 'address',
+        ring: [tilePointToLatLon(TILE_DATA_Z, t.x, t.y, px, py, A.extent)],
+        tags,
+        srcId: id ? String(id) : undefined,
+        // prg reports by lokalny_id alone. Missing means unreportable.
+        report: id ? { source: 'prg', key: { lokalny_id: String(id) } } : null,
+        srcDate: '',
+        srcStatus: '',
+      });
+    }
   }
 
   const out = [];
@@ -1057,6 +1108,7 @@ async function fetchAreaTiles(bounds) {
     delete c.cut;
     out.push(c);
   }
+  for (const c of bestAddr.values()) out.push(c);
   return { list: out, failed, clipped, tiles: tiles.length };
 }
 
@@ -1076,10 +1128,15 @@ async function clusterJump() {
   // whenever the empty tiles happened to be picked first. We break on the
   // first tile that has features, so we rarely fetch them all.
   //
-  // Each bin is weighted by its unmatched buildable count (n_bdot10k + n_egib;
-  // n_prg is left out because in-app review ingests buildings only), and the
-  // jump target is the bin polygon's centroid, shoelaced like ringSignedArea —
-  // in plain JS so clusterJump does not depend on the wasm module for a
+  // Each bin is weighted by its unmatched work — buildings plus PRG addresses,
+  // since the tile ingest now carries both. Addresses are the smaller share
+  // (measured on a z6 tile over central Poland: 1.34 M unmatched buildings to
+  // 0.31 M addresses, and 842 of 854 occupied bins hold both), so including
+  // them adds weight to the bins that were already candidates rather than
+  // steering the jump towards address-only areas. n_prg used to be excluded
+  // because tile ingest was buildings-only; that reason is gone. The jump
+  // target is the bin polygon's centroid, shoelaced in plain JS like
+  // ringSignedArea, so clusterJump does not depend on the wasm module for a
   // one-off report that the point() wasm kernel would otherwise give.
   for (const [x, y] of order) {
     const ck = 'clusters/' + CLUSTER_Z + '/' + x + '/' + y;
@@ -1101,7 +1158,8 @@ async function clusterJump() {
     for (const fb of L.features) {
       const f = mvtFeature(fb, L);
       if (!f.rings.length || !f.rings[0].length) continue;
-      const w = (Number(f.props.n_bdot10k) || 0) + (Number(f.props.n_egib) || 0);
+      const w = (Number(f.props.n_bdot10k) || 0) + (Number(f.props.n_egib) || 0) +
+        (Number(f.props.n_prg) || 0);
       if (!w) continue;
       const r = f.rings[0];
       let ax = 0, cx = 0, cy = 0;
@@ -1134,16 +1192,22 @@ async function loadArea() {
       setStage('');
       const why = res.failed === res.tiles
         ? 'Could not reach the tile server (' + res.failed + '/' + res.tiles + ' tiles failed)'
-        : 'No buildings left to import within ' + spanKm(b) + ' km of here';
-      toast(why + '. Addresses need “Get this area\'s data”.', res.failed ? 'warn' : undefined);
+        : 'No unmatched buildings or addresses within ' + spanKm(b) + ' km of here';
+      toast(why + '.', res.failed ? 'warn' : undefined);
       if (!res.failed) $('start').classList.add('expanded');
       return;
     }
+    const blds = res.list.filter((c) => c.kind === 'building').length;
+    const addrs = res.list.length - blds;
     const q = tileQuantCm(b.getCenter().lat, TILE_DATA_Z).toFixed(0);
     const notes = [];
     if (res.clipped) notes.push(res.clipped + ' cut by tile edges, skipped');
     if (res.failed) notes.push(res.failed + ' of ' + res.tiles + ' tiles failed');
-    await ingest(res.list, res.list.length + ' buildings (±' + q + ' cm from tiles)' +
+    // Name both counts when both are present; "1 buildings" reads like a bug.
+    const parts = [];
+    if (blds) parts.push(blds + ' building' + (blds === 1 ? '' : 's'));
+    if (addrs) parts.push(addrs + ' address' + (addrs === 1 ? '' : 'es'));
+    await ingest(res.list, parts.join(' + ') + ' (±' + q + ' cm from tiles)' +
       (notes.length ? ' · ' + notes.join(' · ') : ''));
   } catch (err) {
     setStage('');
