@@ -38,7 +38,9 @@ function paintSettings() {
 }
 
 async function saveSettings() {
-  S.imagery = $('sImagery').value;
+  // The proxy is no longer in the picker, but a stale cached shell could still
+  // submit it. Keep the bad source from coming back through Settings.
+  S.imagery = $('sImagery').value === 'orto-proxy' ? DEF.imagery : $('sImagery').value;
   S.customUrl = $('sCustomUrl').value.trim();
   S.customLayers = $('sCustomLayers').value.trim();
   S.tileTTLdays = +$('sTileTTL').value || DEF.tileTTLdays;
@@ -197,12 +199,13 @@ function bindUI() {
   if (saved) S = Object.assign({}, DEF, saved);
 
   // Saved settings win over DEF, so correcting the default was not enough:
-  // anyone who had ever tapped Save stayed pinned to orto-proxy, which cannot
-  // return a pixel-readable tile at all. Move them across once.
+  // anyone who had ever tapped Save could stay pinned to orto-proxy. That
+  // source now 404s a large share of its GetMaps, so it is no longer in the
+  // picker; move every saved selection off it, not just the first one.
   let migrated = false;
-  if (S.imagery === 'orto-proxy' && !S.offProxy) {
+  if (S.imagery === 'orto-proxy') {
     S.imagery = DEF.imagery;
-    S.offProxy = true;
+    delete S.offProxy;
     await dbPut('kv', 'settings', S).catch(() => {});
     migrated = true;
   }
@@ -230,7 +233,7 @@ function bindUI() {
   if (n) console.log('evicted', n, 'stale cache entries');
   setControls(false);
   if (migrated) {
-    toast('Imagery moved off the budynki proxy — its CORS headers block pixel reads', 'warn');
+    toast('Imagery switched to GUGiK high-res - the budynki proxy returns 404s', 'warn');
   }
   const env = envReport();
   if (env.framed) {

@@ -222,8 +222,9 @@ header. They predate 0.4.2 and are now wrong.
 
 Direct GUGiK WMS (`orto-high` by default), never the budynki proxy: the proxy duplicates
 `Access-Control-Allow-Origin` on image responses, so `fetch` can never obtain a tile through it and
-the cache and auto-fit are dead while the map still *looks* fine. Do not restore it without
-re-measuring.
+the cache and auto-fit are dead while the map still *looks* fine. It also 404s a large share of its
+GetMaps. The proxy is not in the Settings picker; a saved selection is moved to `orto-high` on every
+launch. Do not restore it without re-measuring both faults.
 
 The origin is HTTP/1.1, so the browser caps it at **six connections** shared by `fetch` and `<img>`,
 and it sends no caching headers at all. Requests, not bytes, are the scarce resource. It also drops
