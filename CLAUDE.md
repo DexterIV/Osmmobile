@@ -154,6 +154,13 @@ inside the candidate. For addresses, the same house number within 30 m — on a 
 reports as already mapped, and the street is compared when both sides have one, because number 5
 exists on every street in town. The number is echoed as tagged, not lowercased.
 
+**Every address already in OSM is labelled on the map**, not only the ones a verdict happens to need:
+free-standing address nodes get a cyan dot plus their number, and a building carrying
+`addr:housenumber` gets its number on the footprint. In a typical Polish cell most numbers live on
+buildings rather than on nodes (measured in one Mokotów cell: 47 buildings numbered against 3
+standalone nodes), so labelling only nodes made the map look address-free and made a new address feel
+ungrounded.
+
 Verified in a browser: a cell loads in ~190 ms with 47 footprints, a candidate copied onto a real
 footprint reads `covered by an OSM building`, the duplicate check reports `5 already in OSM here`,
 and 53 dashed footprints plus house-number labels draw on screen.
