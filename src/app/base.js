@@ -37,19 +37,17 @@ const DEF = {
   driftStep: 0.5,
   clearRadius: 50,
   dropKeys: [],
-  // Set once the one-time move off orto-proxy has happened, so choosing it
-  // again by hand is respected rather than silently undone on every launch.
-  offProxy: false,
   // Set once the tile cache has been purged of bodies stored before the build
-  // that started checking them for completeness. Same shape as offProxy: a
-  // one-time migration that must not repeat on every launch.
+  // that started checking them for completeness. A one-time migration that must
+  // not repeat on every launch.
   tilesChecked: false,
 };
 
 const PRESETS = {
-  // Kept only so it can be re-tested if the header duplication is ever fixed
-  // upstream. Tiles do draw through it, because a plain <img> performs no CORS
-  // check, but nothing that needs fetch will work.
+  // Not offered in Settings, and main() moves any saved selection off it: the
+  // proxy 404s a large share of GetMaps and duplicates CORS headers. Kept only
+  // so it can be re-tested if both are ever fixed upstream. Tiles draw through
+  // it because a plain <img> performs no CORS check, but fetch never can.
   'orto-proxy': {
     name: 'Ortophoto via budynki proxy (CORS broken)',
     url: 'https://budynki.openstreetmap.org.pl/orto',
