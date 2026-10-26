@@ -64,6 +64,7 @@ fragment to `src/app/manifest.mjs`; `build.mjs` and the tests both read that lis
 |---|---|
 | `wasm.test.mjs` | the AssemblyScript kernels |
 | `retry.test.mjs` | retry/timeout/backoff helpers against a stub fetch |
+| `tilewhy.test.mjs` | blank-tile reason mapping, error priority, and the SVG placeholder |
 | `parse.test.mjs` | the wasm `.osm` scanner, against a real captured `/josm_data` response |
 | `mvt.test.mjs` | the hand-written vector-tile decoder and tile math, including the prefetch tile range, plus the address-ingest wiring |
 | `context.test.mjs` | overlap and duplicate-address verdicts, against a real OSM footprint cell |
@@ -243,6 +244,13 @@ whole transport design:
 - **Spaced healing, not more retries.** Bursts fail; the same URLs succeed minutes later. Blank tiles
   retry later through `<img>` only, on a jittered schedule, so a screenful of blanks cannot look like
   a source-wide failure. A skipped slot while hidden/offline is waited, not spent.
+- **A blank tile says why and can be retried.** `finish` draws an SVG placeholder naming the best
+  reason it has (HTTP status, timeout, offline/network, incomplete body), reveals it manually because
+  Leaflet only adds `leaflet-tile-loaded` on success, and leaves the auto-heal running. After all heal
+  slots are spent, the tile grows a RETRY button; its button area is the click target (the rest stays
+  draggable), and the focused tile answers Enter/Space. Retrying recreates it through Leaflet so the
+  full cache/fetch/body-check/heal pipeline runs again. A tile that decodes to black is
+  indistinguishable from legitimate black imagery and cannot be diagnosed.
 - **A 200 can be a truncated image.** Bodies stop mid-JPEG and still report full dimensions. Reject
   anything without `FFD9`/`IEND` on both read and write, and never let the `<img>` fallback paint what
   the fetch path refused. The `tiles` store was purged once via `S.tilesChecked` for this reason.

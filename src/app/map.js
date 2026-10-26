@@ -16,6 +16,20 @@ function initMap() {
   // to answer "where does this go next", which is a question you ask by zooming
   // out, and selecting by the visible bounds is also what keeps it cheap.
   map.on('moveend zoomend', drawPending);
+  // The candidate polygon sits in Leaflet's overlay pane, above the tile grid.
+  // A blank tile under its outline would otherwise lose the click to the path,
+  // even though the tile itself accepts pointer events; look through the hit
+  // stack for a ready tile before treating the click as a map click.
+  map.on('click', (e) => {
+    const oe = e.originalEvent;
+    if (!oe || typeof oe.clientX !== 'number') return;
+    const stack = document.elementsFromPoint(oe.clientX, oe.clientY);
+    if (!stack.length || !(stack[0].classList && stack[0].classList.contains('cand'))) return;
+    for (const el of stack) {
+      if (el.classList && el.classList.contains('tile-retry') &&
+          retryHit(el, oe.clientX, oe.clientY)) { retryBlankTile(el); break; }
+    }
+  });
   watchMapSize();
 }
 
