@@ -102,17 +102,35 @@ let tileFetchMisses = 0;
 let tileImgRun = 0;
 let probeToken = 0;
 
+// Background prefetch of the next candidate's screenful. The chain already
+// keeps steps short, so most of that screenful is in the cache or still in
+// Leaflet's tile grid; these maps only carry the genuinely new edge. A promise
+// is kept while the bytes are in flight so a verdict that lands mid-prefetch
+// reuses them instead of asking for the same URL twice; the brief in-memory
+// cache covers the microsecond race between the promise settling and the tile
+// layer's earlier IndexedDB read.
+const prefetches = new Map();
+const prefetched = new Map();
+let prefetchTimer = 0;
+let prefetchAgain = false;
+let prefetchBusy = false;
+let prefetchEpoch = 0;
+
 // What a screenful actually cost. This is the per-tile attempt count the notes
 // asked for, and Run diagnostics prints it rather than needing new markup.
 // heal/healed are counted apart from net/tiles on purpose: folding a repair
 // into either would make 'requests per tile' read healthy exactly when a
 // screenful is costing double, and that ratio is how this branch is judged.
-const tileStats = { tiles: 0, cache: 0, fetch: 0, img: 0, blank: 0, cancel: 0, net: 0, ms: 0, n: 0, heal: 0, healed: 0, truncated: 0 };
+// prefetch is likewise separate: those requests are background work for the
+// next candidate, not part of the current screenful's cost.
+const tileStats = { tiles: 0, cache: 0, fetch: 0, img: 0, blank: 0, cancel: 0, net: 0, ms: 0, n: 0, heal: 0, healed: 0, truncated: 0, prefetch: 0 };
 function tileStatsLine() {
   const s = tileStats;
   const per = s.tiles ? (s.net / s.tiles).toFixed(2) : '0';
   const avg = s.n ? Math.round(s.ms / s.n) : 0;
-  return s.tiles + ' tiles, ' + s.net + ' requests (' + per + '/tile), ' +
+  return s.tiles + ' tiles, ' + s.net + ' requests' +
+    (s.prefetch ? ' + ' + s.prefetch + ' prefetched' : '') +
+    ' (' + per + '/tile), ' +
     s.cache + ' from cache, ' + s.fetch + ' by fetch, ' + s.img + ' by <img>, ' +
     s.blank + ' blank, ' + s.cancel + ' cancelled, ' + avg + ' ms mean, path=' + tilePath +
     (s.heal ? '; healing spent ' + s.heal + ' requests and recovered ' + s.healed : '') +
@@ -188,6 +206,169 @@ async function imageBlobOk(b) {
   return true;
 }
 
+// The tile range a view covers, with Leaflet's own edge rule: floor the
+// north-west pixel and ceil the south-east one minus one. Getting this wrong by
+// a column would prefetch a tile the layer never asks for and miss one it does,
+// which is worse than not prefetching at all.
+function tileRangeAt(cx, cy, w, h, tw, th) {
+  return {
+    x0: Math.floor((cx - w / 2) / tw),
+    x1: Math.ceil((cx + w / 2) / tw) - 1,
+    y0: Math.floor((cy - h / 2) / th),
+    y1: Math.ceil((cy + h / 2) / th) - 1,
+  };
+}
+
+// Prefetch is a convenience, not part of the review path: it must never run
+// when the browser says the user is saving data, while the tab is hidden, until
+// a cors fetch has been proven to work (the <img> fallback cannot be cached), or
+// with the cache switched off.
+function prefetchAllowed() {
+  return S.tileTTLdays > 0 && !!map && !!imgLayer && tilePath === 'fetch' &&
+    candidates.length > cursor + 1 && !document.hidden &&
+    !(navigator.connection && navigator.connection.saveData);
+}
+
+// The prefetch has to produce exactly the URL the tile layer will request, so
+// derive it with getTileUrl rather than rebuilding the XYZ/WMS template here.
+// Leaflet's getTileUrl reads _tileZoom for {z}, and the next view can be a zoom
+// level away from the current one, so point it at the target zoom for the
+// duration of the call and put it back afterwards.
+function prefetchView(c) {
+  let bounds, zoom;
+  if (c.kind === 'building') {
+    bounds = L.latLngBounds(c.ring).pad(1.4);
+    zoom = Math.min(20, Math.round(map.getBoundsZoom(bounds)));
+  } else {
+    bounds = L.latLngBounds([c.ring[0]]);
+    zoom = 19;
+  }
+  const z = imgLayer._clampZoom(zoom);
+  // fitBounds centres on the midpoint of the projected corners, not on the
+  // average latitude, so reproduce that here.
+  const center = map.unproject(
+    map.project(bounds.getSouthWest(), z)
+      .add(map.project(bounds.getNorthEast(), z)).divideBy(2), z);
+  const px = map.project(center, z).floor();
+  const size = map.getSize();
+  const ts = imgLayer.getTileSize();
+  const r = tileRangeAt(px.x, px.y, size.x, size.y, ts.x, ts.y);
+
+  const live = imgLayer._tileZoom === z ? imgLayer._tiles : null;
+  const urls = [];
+  const prevZoom = imgLayer._tileZoom;
+  imgLayer._tileZoom = z;
+  try {
+    for (let y = r.y0; y <= r.y1; y++) {
+      for (let x = r.x0; x <= r.x1; x++) {
+        // Already on screen, loaded or still loading. Asking for it again would
+        // be the duplicate this whole path exists to avoid.
+        if (live && live[x + ':' + y + ':' + z]) continue;
+        // WMS's getTileUrl calls coords.scaleBy, so this must be a real Point
+        // with a z, not a plain object.
+        const coords = L.point(x, y);
+        coords.z = z;
+        urls.push(imgLayer.getTileUrl(coords));
+      }
+    }
+  } finally {
+    imgLayer._tileZoom = prevZoom;
+  }
+  return urls;
+}
+
+// Kept until the tile layer consumes it, so a show() that races the prefetch's
+// cache write still finds the bytes. Bounded: an unused screenful is a few MB,
+// not a session-long leak.
+function rememberPrefetch(url, blob) {
+  if (prefetched.size >= 24) prefetched.delete(prefetched.keys().next().value);
+  prefetched.set(url, blob);
+}
+
+// One request, never a retry chain: a background miss costs nothing because the
+// visible tile will ask again through its own path, with retries and <img>
+// fallback. That is also why this never votes on tilePath or tileFetchMisses —
+// it is speculative work, not evidence that the source is failing.
+async function prefetchTile(url, epoch) {
+  try {
+    const r = await fetchOk(url, {
+      mode: 'cors', tries: 1, timeout: TILE_FETCH_TIMEOUT, retryOn: transientImagery,
+      // Respects the queue for the imagery the reviewer is actually looking at.
+      // Chromium understands the hint; browsers that do not simply ignore it.
+      priority: 'low',
+    });
+    const b = await r.blob();
+    if (!await imageBlobOk(b)) return null;
+    if (epoch === prefetchEpoch) {
+      if (S.tileTTLdays > 0) {
+        await dbPut('tiles', url, { blob: b, t: Date.now() }).catch(() => {});
+      }
+      rememberPrefetch(url, b);
+      tileStats.prefetch++;
+    }
+    return b;
+  } catch (_) {
+    return null;
+  } finally {
+    prefetches.delete(url);
+  }
+}
+
+async function prefetchNext() {
+  if (!prefetchAllowed()) return;
+  const c = candidates[cursor + 1];
+  if (!c) return;
+  const urls = prefetchView(c);
+  const epoch = prefetchEpoch;
+  const jobs = [];
+  for (const url of urls) {
+    // A verdict moves the target. Finish what is in flight, but do not keep
+    // loading the screenful of a candidate the reviewer has already left.
+    if (epoch !== prefetchEpoch || candidates[cursor + 1] !== c || !prefetchAllowed()) break;
+    if (prefetches.has(url) || prefetched.has(url)) continue;
+    const hit = await dbGet('tiles', url).catch(() => null);
+    if (hit && hit.blob && Date.now() - hit.t < S.tileTTLdays * 86400e3) continue;
+    const p = prefetchTile(url, epoch);
+    prefetches.set(url, p);
+    jobs.push(p);
+  }
+  await Promise.all(jobs);
+}
+
+// Debounced so the current screenful gets the connections first, and reset on
+// every verdict: a fast reviewer should not stack one prefetch on another.
+function schedulePrefetch() {
+  prefetchAgain = true;
+  if (prefetchBusy) return;
+  clearTimeout(prefetchTimer);
+  prefetchTimer = setTimeout(() => {
+    prefetchTimer = 0;
+    runPrefetch().catch(() => {});
+  }, 1000);
+}
+
+async function runPrefetch() {
+  if (!prefetchAgain) return;
+  prefetchAgain = false;
+  if (prefetchBusy || !prefetchAllowed()) return;
+  prefetchBusy = true;
+  try {
+    await prefetchNext();
+  } finally {
+    prefetchBusy = false;
+    if (prefetchAgain) schedulePrefetch();
+  }
+}
+
+// A new source or a new area invalidates both the URLs and any pending screenful.
+function cancelPrefetch() {
+  prefetchEpoch++;
+  prefetchAgain = false;
+  clearTimeout(prefetchTimer);
+  prefetchTimer = 0;
+  prefetched.clear();
+}
+
 // One request per source selection, never per tile.
 //
 // This is the ONLY place allowed to conclude that a source sends no usable CORS
@@ -244,6 +425,7 @@ async function probeImagery(token) {
 }
 
 function makeImagery() {
+  cancelPrefetch();
   const src = imagerySource();
   if (imgLayer) map.removeLayer(imgLayer);
   resetPixelMode();
@@ -299,6 +481,7 @@ function makeImagery() {
   imgLayer.on('tileunload tileabort', (e) => { if (e.tile && e.tile._abort) e.tile._abort(); });
   imgLayer.addTo(map);
   imgLayer.bringToBack();
+  schedulePrefetch();
 }
 
 function tileCacheMixin(Base) {
@@ -372,7 +555,37 @@ function tileCacheMixin(Base) {
       };
 
       (async () => {
-        // 1. Cache. A read or a corrupt entry must never be fatal — it is only
+        // 0. A background prefetch for this exact URL. Reuse it instead of
+        //    asking for the same bytes twice: first the in-memory result, then
+        //    a fetch still in flight. The 1 s debounce normally means neither
+        //    is needed by the time the candidate is shown, but a verdict can
+        //    land sooner.
+        const hot = prefetched.get(url);
+        if (hot) {
+          prefetched.delete(url);
+          if (gone()) return;
+          try {
+            await useBlob(hot);
+            tileStats.cache++;
+            return finish();
+          } catch (_) { /* fall through to the normal path */ }
+        }
+        const pending = prefetches.get(url);
+        if (pending) {
+          const b = await pending.catch(() => null);
+          if (gone()) return;
+          if (b) {
+            prefetched.delete(url);
+            try {
+              await useBlob(b);
+              tileStats.cache++;
+              return finish();
+            } catch (_) { /* fall through to the normal path */ }
+          }
+        }
+        if (gone()) return;
+
+        // 1. Cache. A read or a corrupt entry must never be fatal - it is only
         //    an optimisation.
         if (S.tileTTLdays > 0) {
           const hit = await dbGet('tiles', url).catch(() => null);
