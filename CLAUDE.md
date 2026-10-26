@@ -44,14 +44,19 @@ npm run serve      # http://localhost:8080 (python3 -m http.server; on Windows u
 | path | role |
 |---|---|
 | `src/core.ts` | AssemblyScript: `.osm` byte scanner, uniform grid index, Sobel, drift cross-correlation |
-| `src/app.js` | all application logic |
+| `src/app/*.js` | application logic, split by topic; `src/app/manifest.mjs` fixes the concatenation order |
+| `src/app/source.mjs` | Node-only reader that joins the fragments for `build.mjs` and the tests |
 | `src/shell.html` | markup + CSS |
 | `build.mjs` | compiles the wasm, inlines everything, validates output |
 | `src/sw.js` | service-worker source; `__BUILD_ID__` stamped at build time |
-| `test/*.test.mjs` | see below; suites slice functions out of `src/app.js` rather than copy them |
+| `test/*.test.mjs` | see below; suites slice functions out of the concatenated `src/app/*` rather than copy them |
 | `test/fixtures/` | live captures: `/josm_data` export, z14 buildings (v1 and v2), z6 clusters, z6 agg_cells, an OSM `/map` cell, a land-cover multipolygon |
 | `tools/mirror-worker/` | optional Cloudflare Worker that re-adds CORS to upstream |
 | `setup.sh`, `publish.sh` | legacy WSL bootstrap/publish helpers; deployment is CI now |
+
+The fragments are concatenated into one classic script, so they share a single top-level scope:
+function declarations hoist across files, and load-time statements run in manifest order. Add a new
+fragment to `src/app/manifest.mjs`; `build.mjs` and the tests both read that list.
 
 ## Tests
 
@@ -65,6 +70,7 @@ npm run serve      # http://localhost:8080 (python3 -m http.server; on Windows u
 | `tags.test.mjs` | the tag editor's draft-to-tags normalisation |
 | `landuse.test.mjs` | land-cover changeset shape, class filtering, tile selection |
 | `order.test.mjs` | `nearestChain`, against a stub `metresBetween` |
+| `orthogonalize.test.mjs` | the Q squarify pass, against plain `[lat, lon]` rings |
 
 Fixtures are real captures, not hand-built: a decoder bug that only exists against the live schema
 must be able to fail here. Add a new capture rather than editing one.
@@ -240,7 +246,7 @@ whole transport design:
   drop rate, the older per-tile rule false-positived on about six screenfuls in ten.
 - **`img.crossOrigin` stays unset.** The `<img>` path must perform no CORS check at all; pixels that
   need reading are read through the `fetch` path, not by tainting the only path that always paints.
-- **Constants live at the top of `app.js`** (`TILE_FETCH_TIMEOUT`, `TILE_IMG_TIMEOUT`,
+- **Constants live at the top of `src/app/imagery.js`** (`TILE_FETCH_TIMEOUT`, `TILE_IMG_TIMEOUT`,
   `TILE_DEADLINE`, `TILE_HEAL_*`). They were derived from a wired link, not a phone — see Open work.
 - `tileSize: 512` is legal and would quarter the request count, but the pipeline already runs ~1.0–1.4
   requests per tile, it would orphan 256-keyed cache entries, and a bigger render may cost more server
@@ -404,6 +410,6 @@ describe the wasm as a large speedup; the mobile gap was never measured.
 
 ## Licence
 
-GPL-3.0-or-later. `LICENSE` is the canonical text from gnu.org, not transcribed. Each source file
-carries a short notice; for `src/app.js` and `src/sw.js` that notice is inlined into the distributed
-`index.html` and `sw.js` too.
+GPL-3.0-or-later. `LICENSE` is the canonical text from gnu.org, not transcribed. Each standalone
+source file carries a short notice; the app fragments carry it once, at the top of `src/app/base.js`,
+so it reaches the distributed `index.html`, and `src/sw.js` carries its own.

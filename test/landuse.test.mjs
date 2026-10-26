@@ -14,8 +14,9 @@
 // Both are exercised here against a fixture written in that writer's format.
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
+import { readApp } from '../src/app/source.mjs';
 
-const src = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+const src = readApp();
 const xml = readFileSync(new URL('./fixtures/landuse-multipolygon.osm', import.meta.url), 'utf8');
 
 // --- the wasm scanner half, plus the JS relation pass -----------------------
@@ -51,7 +52,7 @@ t('way ids in document order line up with the scanner\'s way count', () => {
 // --- the pure pieces of the parser, sliced out ------------------------------
 const areaFrom = src.indexOf('const AREA_KEYS =');
 const areaTo = src.indexOf('const TAG_RE =');
-assert.ok(areaFrom > 0 && areaTo > areaFrom, 'could not locate areaKind in src/app.js');
+assert.ok(areaFrom > 0 && areaTo > areaFrom, 'could not locate areaKind in the app sources');
 const { areaKind, AREA_KEYS } = new Function(src.slice(areaFrom, areaTo) +
   '; return { areaKind, AREA_KEYS };')();
 
@@ -70,7 +71,7 @@ t('land cover is classified as area, buildings stay buildings', () => {
 // --- osmChange: shared nodes and multipolygon emission ---------------------
 const ocFrom = src.indexOf('function osmChange(');
 const ocTo = src.indexOf('const OSM = ');
-assert.ok(ocFrom > 0 && ocTo > ocFrom, 'could not locate osmChange in src/app.js');
+assert.ok(ocFrom > 0 && ocTo > ocFrom, 'could not locate osmChange in the app sources');
 const { osmChange } = new Function('S', 'esc',
   src.slice(ocFrom, ocTo) + '; return { osmChange };')(
   { dropKeys: [] },
@@ -144,7 +145,7 @@ t('an empty or degenerate hole is ignored rather than emitted', () => {
 // --- the land-cover server client: class filter and tile selection ----------
 const lcFrom = src.indexOf('function lcServer()');
 const lcTo = src.indexOf('async function loadLandCover(');
-assert.ok(lcFrom > 0 && lcTo > lcFrom, 'could not locate the land-cover client in src/app.js');
+assert.ok(lcFrom > 0 && lcTo > lcFrom, 'could not locate the land-cover client in the app sources');
 const mkLc = new Function('S', 'AREA_KEYS', 'fetchOk', 'LC_CLASSES',
   src.slice(lcFrom, lcTo) + '; return { lcServer, lcEnabled, candidateClass, bboxHits };');
 const lc = (S) => mkLc(S, AREA_KEYS, null, []);

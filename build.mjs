@@ -15,6 +15,7 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { readApp } from './src/app/source.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const src = (f) => join(root, 'src', f);
@@ -38,7 +39,7 @@ const leafletJs = readFileSync(join(root, 'node_modules/leaflet/dist/leaflet.js'
   .replace(/\/\/# sourceMappingURL=.*/g, '');
 const leafletCss = readFileSync(join(root, 'node_modules/leaflet/dist/leaflet.css'), 'utf8');
 const shell = readFileSync(src('shell.html'), 'utf8').replace(/\r\n/g, '\n');
-const app = readFileSync(src('app.js'), 'utf8').replace(/\r\n/g, '\n');
+const app = readApp().replace(/\r\n/g, '\n');
 
 // Derived from the sources rather than from the built output, so it can be
 // embedded in that output without chasing its own hash. Line endings are

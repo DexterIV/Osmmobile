@@ -1,13 +1,13 @@
-// Exercises orthogonalizeRing from src/app.js — the pure half of the Q action.
-// Sliced out like nearestChain, so no Leaflet, DOM or wasm is needed: the
-// function must stay testable on plain [lat, lon] rings.
-import { readFileSync } from 'node:fs';
+// Exercises orthogonalizeRing from the app sources — the pure half of the Q
+// action. Sliced out like nearestChain, so no Leaflet, DOM or wasm is needed:
+// the function must stay testable on plain [lat, lon] rings.
 import assert from 'node:assert/strict';
+import { readApp } from '../src/app/source.mjs';
 
-const src = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+const src = readApp();
 const from = src.indexOf('function orthogonalizeRing(');
 const to = src.indexOf('function squarify(');
-assert.ok(from > 0 && to > from, 'could not locate orthogonalizeRing in src/app.js');
+assert.ok(from > 0 && to > from, 'could not locate orthogonalizeRing in the app sources');
 
 const { orthogonalizeRing } = new Function(
   src.slice(from, to) + '; return { orthogonalizeRing };')();

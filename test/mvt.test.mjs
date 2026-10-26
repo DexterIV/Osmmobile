@@ -1,19 +1,20 @@
-// Exercises the hand-written Mapbox Vector Tile decoder in src/app.js against
-// real tiles captured from budynki.openstreetmap.org.pl. Those tiles are the
-// only candidate source a browser can actually read — /sc/* duplicates
+// Exercises the hand-written Mapbox Vector Tile decoder in the app sources
+// against real tiles captured from budynki.openstreetmap.org.pl. Those tiles are
+// the only candidate source a browser can actually read — /sc/* duplicates
 // Access-Control-Allow-Origin and /josm_data omits it — so a decoding mistake
 // here breaks the app's primary data path silently, with plausible-looking but
 // wrong building outlines.
 //
-// As in retry.test.mjs the code is sliced out of app.js rather than copied, so
-// there is only ever one definition of it.
+// As in retry.test.mjs the code is sliced out of the app sources rather than
+// copied, so there is only ever one definition of it.
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
+import { readApp } from '../src/app/source.mjs';
 
-const src = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+const src = readApp();
 const from = src.indexOf('function pbVarint(');
 const to = src.indexOf('function ringSignedArea(');
-assert.ok(from > 0 && to > from, 'could not locate the MVT decoder in src/app.js');
+assert.ok(from > 0 && to > from, 'could not locate the MVT decoder in the app sources');
 
 const make = new Function('TextDecoder', 'Math',
   'const TD = new TextDecoder();' + src.slice(from, to) +

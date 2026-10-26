@@ -1,14 +1,14 @@
-// Exercises the retry helpers in src/app.js. They are the only part of the
+// Exercises the retry helpers in the app sources. They are the only part of the
 // app with non-obvious control flow that does not need a DOM, so they are
 // sliced out of the source and run against a stub fetch. Slicing keeps a
 // single definition of the logic — a copy here would drift from the app.
-import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
+import { readApp } from '../src/app/source.mjs';
 
-const src = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+const src = readApp();
 const from = src.indexOf('function classify(');
 const to = src.indexOf('function markPixelsBlocked(');
-assert.ok(from > 0 && to > from, 'could not locate the retry helpers in src/app.js');
+assert.ok(from > 0 && to > from, 'could not locate the retry helpers in the app sources');
 
 let slept = [];
 const scope = {
