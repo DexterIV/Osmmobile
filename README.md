@@ -18,8 +18,8 @@ works.
   that is already mapped is flagged instead of being called *clear*.
 - **Accept / Reject / Later** per object, with the verdict stored against the upstream object id, so
   a decision sticks even if you meet the object again from a different download.
-- Nudge the outline with a drift pad, drag individual vertices, or **auto-fit** by cross-correlating
-  Sobel edges of the outline against the orthophoto pixels.
+- Nudge the outline with a drift pad, drag individual vertices, **square its corners** like iD's `Q`,
+  or **auto-fit** by cross-correlating Sobel edges of the outline against the orthophoto pixels.
 - **Edit tags** before accepting: add, change or remove any key, with one-tap presets for the keys
   these datasets usually need.
 - **Review the whole queue before anything is sent**, including the exact changeset tags, and drop
@@ -29,7 +29,7 @@ works.
 
 ## Keys
 
-`A` accept · `R` reject · `L` later · `G` auto-fit · `Z` undo · `V` toggle vertices · `E` open in iD · `M` open in Google Maps · arrows nudge.
+`A` accept · `R` reject · `L` later · `G` auto-fit · `Q` square corners · `Z` undo · `V` toggle vertices · `E` open in iD · `M` open in Google Maps · arrows nudge.
 
 ## Build
 

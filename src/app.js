@@ -2167,6 +2167,7 @@ function setControls(on) {
   }
   if (on) {
     $('undoBtn').disabled = !undoStack.length;
+    $('sqBtn').disabled = !cur() || cur().kind !== 'building';
     if (pixelMode === 'blocked') $('autoBtn').disabled = true;
   }
 }
@@ -2333,6 +2334,147 @@ function undo() {
   else shape.setLatLng(c.ring[0]);
   $('undoBtn').disabled = !undoStack.length;
   paintTags();
+  paintChrome();
+}
+
+// Squarify, following iD's Q. Only a corner already within 13° of a right
+// angle moves; a 45° corner or a rotated building keeps its shape because
+// snapping every vertex to the nearest axis would invent a right angle the
+// building never had. Points on nearly straight runs are dropped instead of
+// moved, which also makes a second press a no-op rather than slowly adding
+// staircase vertices.
+//
+// Kept free of DOM and wasm so the test can slice it out of this file.
+function orthogonalizeRing(ring) {
+  const THRESH = 13 * Math.PI / 180;
+  const EPS = 1e-4;
+  const LOWER = Math.cos(Math.PI / 2 - THRESH);   // cos(77°), near a right angle
+  const UPPER = Math.cos(THRESH);                 // cos(13°), near a straight run
+
+  // Local metres. Degrees are not isotropic, so dot products in raw lat/lon
+  // would bias every motion towards north-south.
+  const la0 = ring[0][0], lo0 = ring[0][1];
+  const mLat = 111320;
+  const mLon = 111320 * Math.cos(la0 * Math.PI / 180);
+  const flat = ring.map(([la, lo]) => [(lo - lo0) * mLon, (la - la0) * mLat]);
+
+  // Zero-length edges normalize to [0,0] and make every dot product meaningless,
+  // so drop consecutive duplicates, including a repeated closing vertex.
+  const clean = [];
+  for (const p of flat) {
+    const q = clean[clean.length - 1];
+    if (!q || Math.hypot(p[0] - q[0], p[1] - q[1]) > 1e-6) clean.push(p);
+  }
+  while (clean.length > 1 && Math.hypot(clean[0][0] - clean[clean.length - 1][0],
+                                        clean[0][1] - clean[clean.length - 1][1]) < 1e-6) clean.pop();
+
+  const n = clean.length;
+  if (n < 3) return null;
+
+  const unit = (x, y) => {
+    const len = Math.hypot(x, y);
+    return len ? [x / len, y / len] : [0, 0];
+  };
+  const dotAt = (pts, i) => {
+    const a = pts[(i - 1 + pts.length) % pts.length];
+    const o = pts[i];
+    const b = pts[(i + 1) % pts.length];
+    const p = unit(a[0] - o[0], a[1] - o[1]);
+    const q = unit(b[0] - o[0], b[1] - o[1]);
+    return p[0] * q[0] + p[1] * q[1];
+  };
+
+  // A vertex is "straight enough" to remove when its two edges point opposite
+  // ways, i.e. |dot| is close to 1. Right-angle candidates have dot near 0.
+  const work = [];
+  for (let i = 0; i < n; i++) {
+    if (Math.abs(dotAt(clean, i)) <= UPPER) work.push(clean[i].slice());
+  }
+  if (work.length < 3) return null;
+
+  // What iD scores: corners still near 90° are penalised by how far they are
+  // from it. Near-straight vertices were already dropped above.
+  const score = (pts) => {
+    let total = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const d = dotAt(pts, i);
+      const val = Math.abs(d);
+      if (val < EPS || val > UPPER) continue;
+      if (val < LOWER) total += 2 * Math.min(Math.abs(d - 1), Math.abs(d), Math.abs(d + 1));
+    }
+    return total;
+  };
+
+  // Move a near-right corner along the bisector, proportional to how far off it
+  // is. iD's 0.1 damping is what keeps the iteration stable instead of
+  // overshooting into a self-intersection.
+  const motion = (pts, i) => {
+    const a = pts[(i - 1 + pts.length) % pts.length];
+    const o = pts[i];
+    const b = pts[(i + 1) % pts.length];
+    const p = unit(a[0] - o[0], a[1] - o[1]);
+    const q = unit(b[0] - o[0], b[1] - o[1]);
+    const dot = p[0] * q[0] + p[1] * q[1];
+    if (Math.abs(dot) >= LOWER) return [0, 0];
+    const scale = 2 * Math.min(Math.hypot(a[0] - o[0], a[1] - o[1]),
+                               Math.hypot(b[0] - o[0], b[1] - o[1]));
+    const v = unit(p[0] + q[0], p[1] + q[1]);
+    return [v[0] * 0.1 * dot * scale, v[1] * 0.1 * dot * scale];
+  };
+
+  const start = score(work);
+  const dropped = work.length < n;
+  // Nothing to move, but a redundant collinear vertex is still worth removing.
+  if (start < EPS && !dropped) return null;
+
+  let best = work.map((p) => p.slice());
+  let bestScore = start;
+  for (let it = 0; it < 1000 && bestScore > EPS; it++) {
+    const moves = work.map((_, i) => motion(work, i));
+    for (let i = 0; i < work.length; i++) {
+      work[i][0] += moves[i][0];
+      work[i][1] += moves[i][1];
+    }
+    const s = score(work);
+    if (s < bestScore) {
+      bestScore = s;
+      best = work.map((p) => p.slice());
+    }
+  }
+  if (!dropped && bestScore >= start - 1e-12) return null;
+
+  // Refuse an output that has collapsed; a bad outline is worse than a skew.
+  const area = (pts) => {
+    let s = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      s += a[0] * b[1] - b[0] * a[1];
+    }
+    return Math.abs(s) / 2;
+  };
+  if (area(best) < Math.max(1, area(clean) * 0.5)) return null;
+
+  return best.map(([x, y]) => [la0 + y / mLat, lo0 + x / mLon]);
+}
+
+function squarify() {
+  const c = cur();
+  if (!c) return;
+  if (c.kind !== 'building') {
+    toast('Only building outlines can be squared', 'warn');
+    return;
+  }
+  const out = orthogonalizeRing(c.ring);
+  if (!out) {
+    toast('Nothing to square — already square, or corners are not near a right angle', 'warn');
+    return;
+  }
+  pushUndo();
+  c.ring = out;
+  c.centroid = centroid(out);
+  c.moved = true;
+  shape.setLatLngs(c.ring);
+  drawVertices();
   paintChrome();
 }
 
@@ -3612,6 +3754,7 @@ function bindUI() {
   $('acceptBtn').onclick = () => verdict('accept');
   $('undoBtn').onclick = undo;
   $('autoBtn').onclick = autoAlign;
+  $('sqBtn').onclick = squarify;
   $('idBtn').onclick = openInId;
   $('gmBtn').onclick = openInGoogleMaps;
   $('vertexToggle').onclick = (e) => {
@@ -3685,6 +3828,7 @@ function bindUI() {
     else if (low === 'l' || k === ' ') { e.preventDefault(); verdict('later'); }
     else if (low === 'z') undo();
     else if (low === 'g') autoAlign();
+    else if (low === 'q') squarify();
     else if (low === 'v') $('vertexToggle').click();
     else if (low === 'e') openInId();
     else if (low === 'm') openInGoogleMaps();
