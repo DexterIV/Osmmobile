@@ -65,7 +65,7 @@ fragment to `src/app/manifest.mjs`; `build.mjs` and the tests both read that lis
 | `wasm.test.mjs` | the AssemblyScript kernels |
 | `retry.test.mjs` | retry/timeout/backoff helpers against a stub fetch |
 | `parse.test.mjs` | the wasm `.osm` scanner, against a real captured `/josm_data` response |
-| `mvt.test.mjs` | the hand-written vector-tile decoder and tile math, plus the address-ingest wiring |
+| `mvt.test.mjs` | the hand-written vector-tile decoder and tile math, including the prefetch tile range, plus the address-ingest wiring |
 | `context.test.mjs` | overlap and duplicate-address verdicts, against a real OSM footprint cell |
 | `tags.test.mjs` | the tag editor's draft-to-tags normalisation |
 | `landuse.test.mjs` | land-cover changeset shape, class filtering, tile selection |
@@ -232,6 +232,12 @@ whole transport design:
 - **One request per tile.** A healthy path is IndexedDB hit → paint, or one `fetch` that both paints
   and fills the cache; a probe per source selection decides which. Never `<img>` plus a background
   cache-fill `fetch`: with no cache headers that is two real downloads.
+- **One candidate of look-ahead, after a pause.** `schedulePrefetch` waits 1 s after a show, then
+  loads the next candidate's newly exposed tiles at low fetch priority and writes them to the same
+  cache. It only runs on a proven cors path with the tile cache on, skips tiles already on screen or
+  cached, does one request per URL (no retry chain), and yields to Save-Data or a hidden tab. The
+  in-flight map is shared with `createTile`, so a verdict that lands mid-prefetch reuses the request
+  instead of issuing it twice. Reset on every verdict, so a fast reviewer does not stack screenfuls.
 - **No app-level concurrency limiter.** Higher concurrency measured better; the browser's six are
   the cap, and the fix is to stop handing them junk.
 - **Spaced healing, not more retries.** Bursts fail; the same URLs succeed minutes later. Blank tiles

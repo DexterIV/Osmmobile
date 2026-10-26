@@ -1,4 +1,5 @@
 async function ingest(list, label) {
+  cancelPrefetch();
   const dec = new Map();
   for (const e of await dbAll('decisions')) dec.set(e.key, e.val.verdict);
 

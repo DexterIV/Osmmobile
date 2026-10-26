@@ -69,6 +69,7 @@ function setControls(on) {
 function show() {
   const c = cur();
   if (!c) {
+    cancelPrefetch();
     setControls(false);
     $('start').style.display = 'flex';
     $('emptyMsg').textContent = candidates.length
@@ -87,6 +88,7 @@ function show() {
   drawContext();
   drawPending();
   fitShape();
+  schedulePrefetch();
 }
 
 function drawShape() {

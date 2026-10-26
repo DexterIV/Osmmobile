@@ -279,4 +279,31 @@ t('a truncated tile is rejected rather than silently mis-decoded', () => {
   pass++;
 }
 
+// --- prefetch tile range -----------------------------------------------------
+// The background prefetch has to ask for exactly the tiles Leaflet will ask for
+// when the next candidate is shown. One column off and it wastes a request and
+// still waits for the real one.
+const trFrom = src.indexOf('function tileRangeAt(');
+const trTo = src.indexOf('function prefetchAllowed(');
+assert.ok(trFrom > 0 && trTo > trFrom, 'could not locate tileRangeAt in the app sources');
+const { tileRangeAt } = new Function(src.slice(trFrom, trTo) + '; return { tileRangeAt };')();
+
+t('a viewport covers every tile it touches, with no extra column', () => {
+  // 390x800 around a fractional centre: floor(nw) .. ceil(se)-1, which is
+  // Leaflet's _pxBoundsToTileRange rule.
+  assert.deepEqual(tileRangeAt(1000.4, 2000.6, 390, 800, 256, 256),
+    { x0: 3, x1: 4, y0: 6, y1: 9 });
+});
+
+t('a viewport aligned to the grid does not grab the next tile', () => {
+  // nw=256, se=768: tiles 1 and 2, not 3. A naive ceil would fetch 3.
+  assert.deepEqual(tileRangeAt(512, 512, 512, 512, 256, 256),
+    { x0: 1, x1: 2, y0: 1, y1: 2 });
+});
+
+t('a viewport smaller than one tile stays on one tile', () => {
+  assert.deepEqual(tileRangeAt(100, 100, 10, 10, 256, 256),
+    { x0: 0, x1: 0, y0: 0, y1: 0 });
+});
+
 console.log('\nmvt: ' + pass + ' groups passed');
