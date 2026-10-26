@@ -172,6 +172,19 @@ overrides `c.tier` with the real verdict as soon as the cell loads. Greedy backt
 asserts on how *rare* long steps are, not on the maximum, and jitters the grid because a perfectly
 regular grid ties with latitude order and would assert nothing.
 
+## Editing the outline
+
+Nudge with the pad or arrows (`S.driftStep` per press), drag a vertex, `G` auto-fit, `Q` square the
+corners. Every edit snapshots geometry **and** tags with `pushUndo`; the drift readout compares the
+centroid against `c.orig`, so it is the only place the original position survives.
+
+`Q` follows iD's orthogonalize rather than snapping to the nearest axis: a corner already within 13°
+of a right angle is moved along its bisector, and vertices on nearly straight runs are dropped. A
+rotated building keeps its orientation and a 45° bay keeps its angle, because forcing every corner
+to 0/90° would invent geometry the source never had — and the tests pin that restraint. It is a
+building-only action; land-cover rings share boundaries and must not be reshaped. Projection is to
+local metres first: dot products in degrees would bias every move north-south.
+
 ## Provenance and staleness
 
 Candidates are **BDOT10k** (GUGiK topographic database) and **PRG**, not *ewidencja budynków*
