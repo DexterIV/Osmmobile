@@ -154,6 +154,9 @@ path.cand{filter:drop-shadow(0 0 4px rgba(255,45,149,.5))}
    duplicate is obvious against the candidate rather than having to be inferred. */
 .ctxHn{font-family:var(--mono);font-size:9.5px;color:#22d3ee;white-space:nowrap;
   text-shadow:0 0 3px #060b10,0 0 3px #060b10;margin-left:7px;margin-top:-6px;width:auto!important}
+/* A number on a footprint is context for the street's numbering; a free-standing
+   node is an address in its own right, so it keeps the brighter label. */
+.ctxHn.way{opacity:.72}
 .ghost{padding:11px;border-radius:7px;border:1px solid var(--line);background:var(--panel2);
   color:var(--text);font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase}
 

@@ -2620,6 +2620,17 @@ function drawContext() {
       color: '#22d3ee', weight: 1.5, dashArray: '4,3',
       fillColor: '#22d3ee', fillOpacity: 0.10, interactive: false,
     }).addTo(ctxLayer);
+    // In Poland the house number often lives on the building rather than on a
+    // separate node, and an unlabelled footprint hid those addresses: the map
+    // showed a building with no sign it was already numbered. Same cyan label as
+    // an address node, placed on the footprint it belongs to.
+    if (w.hn) {
+      const [la, lo] = ringCentroidSimple(w.ring);
+      L.marker([la, lo], {
+        interactive: false,
+        icon: L.divIcon({ className: 'ctxHn way', html: esc(String(w.hn)), iconSize: null }),
+      }).addTo(ctxLayer);
+    }
   }
   for (const a of cell.addrs) {
     L.circleMarker([a.lat, a.lon], {
