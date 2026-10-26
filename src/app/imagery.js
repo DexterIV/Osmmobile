@@ -206,6 +206,144 @@ async function imageBlobOk(b) {
   return true;
 }
 
+// Why a tile ended up blank, in words short enough to draw on it. The transport
+// errors already carry .kind; the rest is the small set of messages this file
+// produces. "network error" vs "offline" matters because the remedy differs:
+// wait for signal, or try another source.
+function tileWhy(err, online) {
+  if (online === undefined) online = typeof navigator === 'undefined' || navigator.onLine !== false;
+  if (!err) return 'imagery failed';
+  // The <img> fallback only ever says "image failed", but if the browser knows
+  // it is offline, the reason is not a mystery. An HTTP answer proves the link
+  // is up even when navigator.onLine disagrees, so do not hide the status.
+  if (online === false && err.kind !== 'http') return 'offline';
+  if (err.kind === 'timeout') return 'timed out';
+  if (err.kind === 'http') return /^HTTP \d+/.test(err.message || '') ? err.message : 'server error';
+  if (err.kind === 'network') return online ? 'network error' : 'offline';
+  const msg = err.message || '';
+  if (msg === 'incomplete image body') return 'incomplete image';
+  if (msg === 'tile failed' || msg === 'image failed') return 'image failed';
+  return msg || 'imagery failed';
+}
+
+// The fetch error is usually the only one that knows the HTTP status; the <img>
+// attempts that follow it fail with a bare "image failed". Keep the more
+// specific reason instead of letting the last, least informative error win.
+function preferErr(a, b) {
+  const score = (e) => {
+    if (!e) return 0;
+    if (e.kind === 'http' || (e.message || '') === 'incomplete image body') return 4;
+    if (e.kind === 'timeout') return 3;
+    if (e.kind === 'network') return 2;
+    return 1;
+  };
+  return score(b) >= score(a) ? b : a;
+}
+
+function xmlEsc(s) {
+  return String(s).replace(/[&<>"]/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;',
+  }[c]));
+}
+
+// A tile is an <img>, so the reason and the retry affordance have to be pixels.
+// An SVG data URI keeps it crisp at any DPR and rides the tile's own transform
+// through pans and zooms without a second overlay layer to keep in sync.
+function blankTileImage(reason, hint, retry) {
+  let why = String(reason || 'imagery failed');
+  if (why.length > 24) why = why.slice(0, 21) + '...';
+  const button = retry
+    ? '<rect x="80" y="150" width="96" height="34" rx="7" fill="#18222c" stroke="#2a3542"/>' +
+      '<text x="128" y="172" fill="#e6edf3" font-family="monospace" font-size="11" ' +
+      'font-weight="600" letter-spacing="1" text-anchor="middle">RETRY</text>'
+    : '';
+  const svg =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">' +
+    '<rect width="256" height="256" fill="#0e141a"/>' +
+    '<rect x="8.5" y="8.5" width="239" height="239" fill="none" stroke="#22303c" ' +
+    'stroke-dasharray="7 6"/>' +
+    '<text x="128" y="112" fill="#e6edf3" font-family="sans-serif" font-size="18" ' +
+    'font-weight="600" text-anchor="middle">' + xmlEsc(why) + '</text>' +
+    '<text x="128" y="136" fill="#7d8fa0" font-family="monospace" font-size="11" ' +
+    'text-anchor="middle">' + xmlEsc(hint || '') + '</text>' +
+    button + '</svg>';
+  return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}
+
+// done(err) leaves the tile hidden: Leaflet adds leaflet-tile-loaded only on
+// success, and reveal it has to be done here or the placeholder is invisible.
+function showBlankTile(img, err, hint, retry) {
+  if (!img || img._cancelled) return;
+  revokeTile(img);
+  img._blank = true;
+  img._retryReady = !!retry;
+  img._why = tileWhy(err);
+  img.src = blankTileImage(img._why, hint, retry);
+  img.title = 'Imagery failed: ' + img._why + (retry ? ' - click to retry' : '');
+  img.classList.add('tile-blank');
+  if (retry) img.classList.add('tile-retry');
+  else img.classList.remove('tile-retry');
+  if (retry) {
+    img.setAttribute('role', 'button');
+    img.setAttribute('aria-label', 'Imagery failed: ' + img._why + '. Retry this tile.');
+    img.tabIndex = 0;
+  } else {
+    img.setAttribute('role', 'presentation');
+    img.removeAttribute('aria-label');
+    img.removeAttribute('tabindex');
+  }
+  // _tileReady already started its fade at opacity 0 for the failed tile. In a
+  // visible tab the fade reaches 1 a frame later, but a backgrounded tab can
+  // leave it at 0 indefinitely; the reason must not depend on that animation.
+  L.DomUtil.setOpacity(img, 1);
+  L.DomUtil.addClass(img, 'leaflet-tile-loaded');
+}
+
+// The placeholder draws a 96x34 button at (80,150) in the 256px tile. Only that
+// rectangle (plus a small touch margin) is a retry target; the rest of the tile
+// must keep dragging the map, or a screenful of blanks would make the map
+// unpannable once they all reached the final state.
+function retryHit(img, x, y) {
+  if (!img || !img._retryReady || typeof x !== 'number' || typeof y !== 'number') return false;
+  const r = img.getBoundingClientRect();
+  if (!r.width || !r.height) return false;
+  const sx = r.width / 256, sy = r.height / 256, pad = 6;
+  const left = r.left + 80 * sx - pad, top = r.top + 150 * sy - pad;
+  return x >= left && x <= left + 96 * sx + pad * 2 &&
+    y >= top && y <= top + 34 * sy + pad * 2;
+}
+
+function clearBlankTile(img) {
+  img._blank = false;
+  img._retryReady = false;
+  img._why = '';
+  img.classList.remove('tile-blank', 'tile-retry');
+  img.setAttribute('role', 'presentation');
+  img.removeAttribute('aria-label');
+  img.removeAttribute('title');
+  img.removeAttribute('tabindex');
+}
+
+// Recreate the tile through Leaflet rather than keeping a second loader beside
+// the pipeline: the new element gets the cache read, the promoted fetch, the
+// body check, the fast <img> attempts and a fresh heal window for free.
+function retryBlankTile(img) {
+  if (!img || !img._retryReady || !imgLayer) return;
+  let key = null;
+  for (const k in imgLayer._tiles) {
+    const t = imgLayer._tiles[k];
+    if (t && t.el === img) { key = k; break; }
+  }
+  if (!key) return;
+  img._retryReady = false;
+  img.classList.remove('tile-retry');
+  imgLayer._removeTile(key);
+  imgLayer._forceVisible = imgLayer._forceVisible || new Set();
+  imgLayer._forceVisible.add(key);
+  imgLayer._update(map.getCenter());
+  if (!imgLayer._tiles[key]) imgLayer._forceVisible.delete(key);
+}
+
 // The tile range a view covers, with Leaflet's own edge rule: floor the
 // north-west pixel and ceil the south-east one minus one. Getting this wrong by
 // a column would prefetch a tile the layer never asks for and miss one it does,
@@ -490,6 +628,7 @@ function tileCacheMixin(Base) {
       const img = document.createElement('img');
       img.setAttribute('role', 'presentation');
       img.alt = '';
+      const key = this._tileCoordsToKey(coords);
       const url = this.getTileUrl(coords);
       const t0 = performance.now();
       tileStats.tiles++;
@@ -519,13 +658,18 @@ function tileCacheMixin(Base) {
         // same path. removeAttribute, not src = '': an empty src is a real URL
         // that some browsers fetch.
         if (err) img.removeAttribute('src');
+        const forced = this._forceVisible && this._forceVisible.delete(key);
         done(err || null, img);
         if (err) {
           tileStats.blank++;
-          img.src = L.Util.emptyImageUrl;
+          showBlankTile(img, err, 'auto-retrying', false);
         } else {
           tileStats.ms += performance.now() - t0;
           tileStats.n++;
+          // A tile recreated from the retry button gets the same fade as any
+          // other, but a backgrounded tab can leave that fade parked at opacity
+          // 0. The user explicitly asked for this one, so show it now.
+          if (forced) L.DomUtil.setOpacity(img, 1);
         }
       };
       // Called synchronously by whoever abandons the tile, so its retry chain
@@ -553,6 +697,32 @@ function tileCacheMixin(Base) {
         img._blob = URL.createObjectURL(b);
         return loadImg(img, img._blob, TILE_IMG_TIMEOUT);
       };
+
+      // An <img> cannot contain a button, so the placeholder draws one and the
+      // image checks that small rectangle. Only the final state takes pointer
+      // events; while it is auto-retrying, a drag that starts on it still pans
+      // the map, and even in the final state only the button area does not.
+      img.addEventListener('click', (e) => {
+        if (!img._retryReady) return;
+        // browser automation and .click() have no coordinates; a real pointer
+        // must land on the drawn button, not just anywhere on the tile.
+        if ((e.clientX || e.clientY) && !retryHit(img, e.clientX, e.clientY)) return;
+        L.DomEvent.stop(e);
+        retryBlankTile(img);
+      });
+      img.addEventListener('keydown', (e) => {
+        if (!img._retryReady || (e.key !== 'Enter' && e.key !== ' ')) return;
+        e.preventDefault();
+        L.DomEvent.stopPropagation(e);
+        retryBlankTile(img);
+      });
+      const hold = (e) => {
+        if (!img._retryReady) return;
+        const p = e.touches && e.touches[0] ? e.touches[0] : e;
+        if (retryHit(img, p.clientX, p.clientY)) L.DomEvent.stopPropagation(e);
+      };
+      img.addEventListener('mousedown', hold);
+      img.addEventListener('touchstart', hold, { passive: true });
 
       (async () => {
         // 0. A background prefetch for this exact URL. Reuse it instead of
@@ -614,6 +784,7 @@ function tileCacheMixin(Base) {
         //    from <img> and then fetching the same URL for the cache would
         //    download those bytes twice. tries: 1 — the retry lives on the <img>
         //    below, where it is both cheaper and independent of CORS.
+        let fetchErr = null;
         if (tilePath !== 'img') {
           try {
             tileStats.net++;
@@ -649,6 +820,7 @@ function tileCacheMixin(Base) {
             tileStats.fetch++;
             return finish();
           } catch (err) {
+            fetchErr = err;
             if (gone()) return;
             // Deliberately no CORS conclusion here — that lives in probeImagery,
             // which can afford the three requests it takes to tell a missing
@@ -684,11 +856,15 @@ function tileCacheMixin(Base) {
             if (gone()) return;
           }
         }
-        finish(last || new Error('tile failed'));
+        // The fetch is the only attempt that can report a status; the <img>
+        // retries after it fail with a bare "image failed". Keep whichever
+        // reason says more, rather than letting the last one erase an HTTP 502.
+        const reason = preferErr(fetchErr, last) || new Error('tile failed');
+        finish(reason);
 
         // 4. Blank, but not necessarily unloadable. Keep the closure alive and
         //    retry slowly; see healTile.
-        await healTile(img, url, gone);
+        await healTile(img, url, gone, reason);
       })();
 
       return img;
@@ -775,11 +951,12 @@ async function healOnce(img, url) {
   if (S.tileTTLdays > 0) dbPut('tiles', url, { blob: b, t: Date.now() }).catch(() => {});
 }
 
-async function healTile(img, url, gone) {
+async function healTile(img, url, gone, firstErr) {
   // A cache hit whose blob then failed to decode leaves that object URL on the
   // element, and _abort only revokes it when the tile is finally pruned. Holding
   // it across the heal window is a decoded 256x256 bitmap nothing can reach.
   revokeTile(img);
+  let lastErr = firstErr;
   // i counts slots actually spent; waits counts slots skipped. A backgrounded tab
   // must not fire GetMaps at a source that punishes bursts, and offline is a
   // guaranteed waste — but a skipped slot must not be a SPENT one. On a phone,
@@ -792,7 +969,7 @@ async function healTile(img, url, gone) {
     await sleep(backoff(i, TILE_HEAL_BASE, TILE_HEAL_CAP));
     if (gone()) return;
     if (document.hidden || navigator.onLine === false) {
-      if (++waits > TILE_HEAL_WAITS) return;
+      if (++waits > TILE_HEAL_WAITS) break;
       continue;
     }
     i++;
@@ -800,16 +977,21 @@ async function healTile(img, url, gone) {
     try {
       await healOnce(img, url);
       if (gone()) return;
+      clearBlankTile(img);
       L.DomUtil.addClass(img, 'leaflet-tile-loaded');
       tileStats.healed++;
       return;
-    } catch (_) {
+    } catch (err) {
       if (gone()) return;
-      // Back to the gif so a failed attempt is not left holding one of the six
-      // connections this origin allows.
-      img.src = L.Util.emptyImageUrl;
+      lastErr = preferErr(lastErr, err);
+      showBlankTile(img, lastErr, 'auto-retrying', false);
     }
   }
+  // All automatic attempts are spent. Only now does the tile offer a manual
+  // retry, so the click cannot race a heal attempt that is still in flight and
+  // turn one request into two for the same bytes.
+  if (gone()) return;
+  showBlankTile(img, lastErr, 'tap to retry', true);
 }
 
 const CachedTile = tileCacheMixin(L.TileLayer);

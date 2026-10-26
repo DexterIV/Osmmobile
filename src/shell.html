@@ -59,6 +59,16 @@ body{display:flex;flex-direction:column;padding-top:env(safe-area-inset-top);pad
 #map.flickU{transform:translateY(-14px);opacity:.55}
 @media (prefers-reduced-motion:reduce){#map{transition:none}}
 .leaflet-container{background:#0e141a;font-family:var(--mono)}
+/* A failed tile gets a generated placeholder with the reason drawn into it.
+   Leaflet's own img.leaflet-tile is plus-lighter for zoom fades, which would
+   make a dark placeholder depend on whatever is underneath; keep it flat. The
+   retry button is drawn into the tile because an <img> cannot host a child
+   button; only the final state takes pointer events, and its click handler
+   checks the button rectangle so the rest of the tile still pans. */
+.leaflet-container img.tile-blank{mix-blend-mode:normal!important}
+.leaflet-container img.tile-retry{pointer-events:auto;cursor:pointer}
+.leaflet-container img.tile-retry:focus{outline:2px solid var(--ctx);outline-offset:-2px}
+.leaflet-container img.tile-retry:active{filter:brightness(.85)}
 .leaflet-control-attribution{background:rgba(11,15,20,.7)!important;color:var(--dim)!important;font-size:9px}
 .leaflet-control-attribution a{color:var(--dim)!important}
 path.cand{filter:drop-shadow(0 0 4px rgba(255,45,149,.5))}
