@@ -5,11 +5,12 @@
 // is tested against a real captured Overpass cell as well as synthetic shapes.
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
+import { readApp } from '../src/app/source.mjs';
 
-const src = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+const src = readApp();
 const from = src.indexOf('function pointInRing(');
 const to = src.indexOf('function drawContext(');
-assert.ok(from > 0 && to > from, 'could not locate the context helpers in src/app.js');
+assert.ok(from > 0 && to > from, 'could not locate the context helpers in the app sources');
 
 const make = new Function('Math',
   'function metresBetween(a,b){var mLat=111320,mLon=111320*Math.cos(a[0]*Math.PI/180);' +

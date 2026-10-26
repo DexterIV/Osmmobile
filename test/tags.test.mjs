@@ -1,13 +1,13 @@
 // The tag editor writes straight into what gets uploaded to OSM, so the step
 // that turns edited rows into tags is worth pinning down: a stray empty key or
 // an untrimmed value would otherwise become a real changeset.
-import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
+import { readApp } from '../src/app/source.mjs';
 
-const src = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+const src = readApp();
 const from = src.indexOf('function tagsFromDraft(');
 const to = src.indexOf('function commitTags(');
-assert.ok(from > 0 && to > from, 'could not locate tagsFromDraft in src/app.js');
+assert.ok(from > 0 && to > from, 'could not locate tagsFromDraft in the app sources');
 const { tagsFromDraft } = new Function(src.slice(from, to) + '; return { tagsFromDraft };')();
 
 let pass = 0;

@@ -1,13 +1,14 @@
-// Exercises nearestChain from src/app.js. Sliced out like the retry helpers, and
-// given a stub metresBetween, so what is under test is the chaining logic rather
-// than the geodesy — the ordering must be right for any sane distance function.
-import { readFileSync } from 'node:fs';
+// Exercises nearestChain from the app sources. Sliced out like the retry
+// helpers, and given a stub metresBetween, so what is under test is the
+// chaining logic rather than the geodesy — the ordering must be right for any
+// sane distance function.
 import assert from 'node:assert/strict';
+import { readApp } from '../src/app/source.mjs';
 
-const src = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+const src = readApp();
 const from = src.indexOf('function nearestChain(');
 const to = src.indexOf('function orderCandidates(');
-assert.ok(from > 0 && to > from, 'could not locate nearestChain in src/app.js');
+assert.ok(from > 0 && to > from, 'could not locate nearestChain in the app sources');
 
 // Equirectangular, which is plenty at the scale a review batch covers.
 const stub = `const metresBetween = (a, b) => {

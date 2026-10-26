@@ -38,14 +38,16 @@ Requires Node and npm.
 ```bash
 npm install
 npm run build      # asc src/core.ts -> core.wasm, then inlines Leaflet + wasm into index.html
-npm test           # wasm kernels, retry logic, .osm parsing, vector tiles, OSM context, tag editing
+npm test           # wasm kernels, retry logic, .osm parsing, vector tiles, OSM context, tag editing,
+                   # land cover, candidate order, Q squarify
 npm run serve      # http://localhost:8080
 ```
 
 | path | role |
 |---|---|
 | `src/core.ts` | AssemblyScript: `.osm` byte scanner, uniform grid index, Sobel, drift cross-correlation |
-| `src/app.js` | all application logic |
+| `src/app/*.js` | application logic, split by topic and concatenated in `src/app/manifest.mjs` order |
+| `src/app/source.mjs` | Node-only reader that joins the fragments |
 | `src/shell.html` | markup and CSS |
 | `src/sw.js` | service worker source; `__BUILD_ID__` is stamped in at build time |
 | `build.mjs` | compiles the wasm, inlines everything, validates the output |
@@ -53,9 +55,9 @@ npm run serve      # http://localhost:8080
 
 `index.html` and `sw.js` are build artefacts. Edit `src/` and rebuild; never edit them directly.
 
-The build refuses to produce output if any `$('someId')` in `src/app.js` has no matching `id=` in the
-markup, if a bundled script fails to parse, or if `src/sw.js` has lost its `__BUILD_ID__` placeholder.
-Each of those shipped as a bug once.
+The build refuses to produce output if any `$('someId')` in the app sources has no matching `id=` in
+the markup, if a bundled script fails to parse, or if `src/sw.js` has lost its `__BUILD_ID__`
+placeholder. Each of those shipped as a bug once.
 
 ## Data
 
