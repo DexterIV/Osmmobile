@@ -56,9 +56,20 @@ const PRESETS = {
   },
   'orto-std': {
     name: 'Ortophoto standard',
+    // The WMS GetMap endpoint 404s at random under load (measured ~20% even
+    // sequentially, much worse in a screenful burst), so tiles come from the
+    // cached WMTS endpoint instead. The WMS URL stays here for auto-fit, which
+    // needs an arbitrary crop rather than a tile.
     url: 'https://mapy.geoportal.gov.pl/wss/service/PZGIK/ORTO/WMS/StandardResolution',
     layers: 'Raster',
     attr: 'GUGiK',
+    // EPSG:3857 matrices use the same 256 px Web Mercator grid and stop at z19;
+    // maxNativeZoom upscales the deepest real tile at review zoom.
+    xyz: 'https://mapy.geoportal.gov.pl/wss/service/PZGIK/ORTO/WMTS/StandardResolution' +
+      '?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=ORTOFOTOMAPA&STYLE=default' +
+      '&FORMAT=image%2Fjpeg&TILEMATRIXSET=EPSG%3A3857&TILEMATRIX=EPSG%3A3857%3A{z}' +
+      '&TILEROW={y}&TILECOL={x}',
+    maxNativeZoom: 19,
   },
   'orto-high': {
     name: 'Ortophoto high-res',

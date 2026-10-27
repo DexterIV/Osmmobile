@@ -226,8 +226,15 @@ the cache and auto-fit are dead while the map still *looks* fine. It also 404s a
 GetMaps. The proxy is not in the Settings picker; a saved selection is moved to `orto-high` on every
 launch. Do not restore it without re-measuring both faults.
 
-The origin is HTTP/1.1, so the browser caps it at **six connections** shared by `fetch` and `<img>`,
-and it sends no caching headers at all. Requests, not bytes, are the scarce resource. It also drops
+Standard orthophoto tiles come from GUGiK's WMTS endpoint, not its WMS endpoint: `StandardResolution`
+GetMap returns 404 at random under load (measured about 20% even sequentially and much worse in a
+screenful burst), while the WMTS cache answers reliably, sends CORS and `Cache-Control`, and uses the
+same 256 px EPSG:3857 grid. Standard's WMS URL is kept for auto-fit, which needs an arbitrary crop.
+Its WMTS matrices stop at z19, so `maxNativeZoom` upscales at review zoom.
+
+The WMS origin is HTTP/1.1, so the browser caps it at **six connections** shared by `fetch` and
+`<img>`, and its GetMap responses send no caching headers at all. Requests, not bytes, are the scarce
+resource. It also drops
 roughly 12–17 % of connections mid-body and cuts off bursts that recover with time, which drives the
 whole transport design:
 
