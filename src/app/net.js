@@ -213,9 +213,7 @@ async function diagnose() {
     { tries: 3, timeout: 30000 });
 
   const src = imagerySource();
-  // A source can use WMTS for tiles and still have a WMS URL for auto-fit, so
-  // probe whenever a GetMap endpoint exists rather than whenever tiles are WMS.
-  if (src.url) {
+  if (!src.xyz) {
     const u = imageryProbeUrl(src);
     await probe('imagery', u, async (r) => {
       const b = await r.blob();
