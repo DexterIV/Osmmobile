@@ -10,9 +10,7 @@ async function autoAlign() {
   btn.classList.add('busy');
   try {
     const src = imagerySource();
-    // An XYZ source may still carry a WMS URL for this path (standard orthophoto
-    // does), so test for the GetMap endpoint, not for the tile URL.
-    if (!src.url) throw new Error('Auto-align needs a WMS source, not XYZ tiles');
+    if (src.xyz) throw new Error('Auto-align needs a WMS source, not XYZ tiles');
     const cen = centroid(c.ring);
     let ext = 0;
     for (const [la, lo] of c.ring) {

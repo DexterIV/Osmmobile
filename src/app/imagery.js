@@ -600,10 +600,9 @@ function makeImagery() {
     attribution: src.attr,
   };
   if (src.xyz) {
-    // Both XYZ sources stop at z19 (OSM, and GUGiK's standard WMTS matrices).
-    // Without this the z20-21 tiles review zoom asks for are 404s, and
-    // transientImagery treats a 404 as worth retrying, so the preset burned
-    // several requests per tile to render nothing.
+    // tile.openstreetmap.org serves to z19. Without this the z20-21 tiles review
+    // zoom asks for are 404s, and transientImagery treats a 404 as worth
+    // retrying, so this preset burned several requests per tile to render nothing.
     imgLayer = cachedTileLayer(src.xyz, Object.assign({ maxNativeZoom: src.maxNativeZoom || 19 }, common));
   } else {
     imgLayer = cachedWmsLayer(src.url, Object.assign({
