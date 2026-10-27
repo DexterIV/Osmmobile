@@ -176,14 +176,58 @@ async function clusterJump() {
   return [52.2, 21.0];
 }
 
-async function loadArea() {
+// A review queue owns the map controls, and the start panel is hidden while it
+// is active. Without a way back, panning somewhere else meant finishing or
+// reloading the app first. This is the same state reset as an empty queue, but
+// without touching persisted decisions or the upload queue.
+function clearArea() {
+  cancelPrefetch();
+  closeTagEditor();
+  candidates = [];
+  cursor = 0;
+  undoStack = [];
+  if (shape) { map.removeLayer(shape); shape = null; }
+  if (ctxLayer) ctxLayer.clearLayers();
+  if (pendingLayer) pendingLayer.clearLayers();
+  if (vertexGroup) vertexGroup.clearLayers();
+  ctxCells.clear();
+  $('tags').innerHTML = '';
+  $('qCount').textContent = '0 / 0';
+  $('tier').textContent = '-';
+  $('tier').className = 'tier t0';
+  $('dist').textContent = '';
+  $('drift').textContent = '';
+  $('srcAge').textContent = '';
+  $('locality').textContent = '';
+  setControls(false);
+}
+
+async function changeArea() {
+  if (areaLoading || verdicting) return;
   if (areaTooBig()) return;
+  const c = cur();
+  // Accepted items are already in the upload queue and decisions are persisted,
+  // but tag edits and nudges on the current object only live in memory.
+  if (c && (c.tagsEdited || c.moved) &&
+      !confirm('Discard the edits to this candidate and load the area in view?')) return;
+  clearArea();
+  await loadArea();
+}
+
+let areaLoading = false;
+
+async function loadArea() {
+  if (areaLoading) return;
+  if (areaTooBig()) return;
+  areaLoading = true;
   const b = dataBounds();
   setStage('Fetching candidates');
   try {
     const res = await fetchAreaTiles(b);
     if (!res.list.length) {
       setStage('');
+      setControls(false);
+      $('start').style.display = 'flex';
       const why = res.failed === res.tiles
         ? 'Could not reach the tile server (' + res.failed + '/' + res.tiles + ' tiles failed)'
         : 'No unmatched buildings or addresses within ' + spanKm(b) + ' km of here';
@@ -205,7 +249,11 @@ async function loadArea() {
       (notes.length ? ' · ' + notes.join(' · ') : ''));
   } catch (err) {
     setStage('');
+    setControls(false);
+    $('start').style.display = 'flex';
     toast('Could not load tiles: ' + classify(err), 'warn');
+  } finally {
+    areaLoading = false;
   }
 }
 

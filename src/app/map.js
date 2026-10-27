@@ -70,7 +70,7 @@ function watchMapSize() {
 function cur() { return candidates[cursor]; }
 
 function setControls(on) {
-  for (const el of document.querySelectorAll('#pad button, #padTools button, #bar button')) {
+  for (const el of document.querySelectorAll('#pad button, #padTools button, #bar button, #areaBtn')) {
     el.disabled = !on;
   }
   if (on) {

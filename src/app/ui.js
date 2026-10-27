@@ -77,6 +77,7 @@ function bindUI() {
   $('pickBtn').textContent = 'Open a .osm or GeoJSON file';
   $('pickBtn').onclick = () => $('file').click();
   $('loadAreaBtn').onclick = loadArea;
+  $('areaBtn').onclick = changeArea;
   $('lcBtn').onclick = loadLandCover;
   paintLcStatus();
   $('getDataBtn').onclick = async () => {
