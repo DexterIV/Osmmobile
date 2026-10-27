@@ -45,6 +45,10 @@ body{display:flex;flex-direction:column;padding-top:env(safe-area-inset-top);pad
   font-size:11px;padding:4px 8px;border-radius:4px}
 .strip button.ok{color:var(--verify);border-color:#1d4f3e}
 .strip button:disabled{opacity:.35}
+#areaBtn{color:var(--plot);border-color:#5c1240}
+/* The build id is diagnostic only; the strip has to fit the review controls on
+   a phone, and New area is more useful there than a hash. */
+@media (max-width:620px){#buildId{display:none}#areaBtn{padding:4px 6px;font-size:10px}}
 
 #wrap{position:relative;flex:1;min-height:0}
 /* z-index:0 is load-bearing, not decoration. Without it #map has z-index:auto
@@ -269,6 +273,7 @@ input,select{width:100%;background:var(--ink);border:1px solid var(--line);color
   <span id="srcAge"></span>
   <span class="grow" id="locality"></span>
   <span id="buildId"></span>
+  <button id="areaBtn" title="Abandon this queue and load the area in view">New area</button>
   <button id="userBtn">sign in</button>
   <button id="uploadBtn" disabled>↑<span id="upCount">0</span></button>
   <button id="gearBtn">⚙</button>
