@@ -204,14 +204,31 @@ function clearArea() {
 
 async function changeArea() {
   if (areaLoading || verdicting) return;
-  if (areaTooBig()) return;
   const c = cur();
   // Accepted items are already in the upload queue and decisions are persisted,
   // but tag edits and nudges on the current object only live in memory.
   if (c && (c.tagsEdited || c.moved) &&
-      !confirm('Discard the edits to this candidate and load the area in view?')) return;
+      !confirm('Discard the edits to this candidate?')) return;
   clearArea();
-  await loadArea();
+  // Go back to the start/load screen rather than reloading the current view.
+  cancelPrefetch();
+  if (shape) { map.removeLayer(shape); shape = null; }
+  if (ctxLayer) ctxLayer.clearLayers();
+  if (pendingLayer) pendingLayer.clearLayers();
+  if (vertexGroup) vertexGroup.clearLayers();
+  ctxCells.clear();
+  $('tags').innerHTML = '';
+  $('qCount').textContent = '0 / 0';
+  $('tier').textContent = '-';
+  $('tier').className = 'tier t0';
+  $('dist').textContent = '';
+  $('drift').textContent = '';
+  $('srcAge').textContent = '';
+  $('locality').textContent = '';
+  setControls(false);
+  $('start').style.display = 'flex';
+  $('start').classList.remove('expanded');
+  $('emptyMsg').textContent = 'Pan to a town and load buildings, or jump to somewhere with work waiting.';
 }
 
 let areaLoading = false;

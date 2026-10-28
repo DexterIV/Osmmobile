@@ -12,7 +12,6 @@
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { readApp } from './src/app/source.mjs';
@@ -41,15 +40,20 @@ const leafletCss = readFileSync(join(root, 'node_modules/leaflet/dist/leaflet.cs
 const shell = readFileSync(src('shell.html'), 'utf8').replace(/\r\n/g, '\n');
 const app = readApp().replace(/\r\n/g, '\n');
 
-// Derived from the sources rather than from the built output, so it can be
-// embedded in that output without chasing its own hash. Line endings are
-// normalised first: the CI deploy builds on Linux with a LF checkout, this
-// script usually runs on a Windows checkout, and an unnormalised hash made the
-// same sources stamp two different ids — "check the deployed build id matches"
-// failed spuriously every time.
-const buildId = createHash('sha256')
-  .update(app).update(shell).update(leafletJs).update(leafletCss).update(wasm)
-  .digest('hex').slice(0, 12);
+// Use the short commit hash of the main branch this build is based on.
+// Falls back to the current HEAD if origin/main isn't available.
+function getMainHash() {
+  try {
+    const h = execFileSync('git', ['rev-parse', '--short', 'origin/main'], { cwd: root }).toString().trim();
+    if (h) return h;
+  } catch (_) {}
+  try {
+    const h = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: root }).toString().trim();
+    if (h) return h;
+  } catch (_) {}
+  return 'dev';
+}
+const buildId = getMainHash();
 
 const head = [
   '<link rel="manifest" href="./manifest.webmanifest">',
