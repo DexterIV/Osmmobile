@@ -46,6 +46,8 @@ body{display:flex;flex-direction:column;padding-top:env(safe-area-inset-top);pad
 .strip button.ok{color:var(--verify);border-color:#1d4f3e}
 .strip button:disabled{opacity:.35}
 #areaBtn{color:var(--plot);border-color:#5c1240}
+.uploadBtn{background:#10261a !important;color:#9dffb3 !important;border-color:#1d4f3e !important;font-weight:600}
+.uploadBtn:disabled{opacity:.35 !important;color:var(--dim) !important;background:none !important;border-color:var(--line) !important}
 /* The build id is diagnostic only; the strip has to fit the review controls on
    a phone, and New area is more useful there than a hash. */
 @media (max-width:620px){#buildId{display:none}#areaBtn{padding:4px 6px;font-size:10px}}
@@ -275,7 +277,7 @@ input,select{width:100%;background:var(--ink);border:1px solid var(--line);color
   <span id="buildId"></span>
   <button id="areaBtn" title="Back to load / pick area">New area</button>
   <button id="userBtn">sign in</button>
-  <button id="uploadBtn" disabled>↑<span id="upCount">0</span></button>
+  <button id="uploadBtn" class="uploadBtn" disabled>Upload (<span id="upCount">0</span>)</button>
   <button id="gearBtn">⚙</button>
 </div>
 
@@ -354,6 +356,11 @@ input,select{width:100%;background:var(--ink);border:1px solid var(--line);color
     <p class="hint">Nothing has been sent yet. Check the list, drop anything you are unsure of, then
       upload. Dropping an item here also forgets its accept, so it comes back next time you load
       that area.</p>
+    <label>Changeset comment</label>
+    <input id="qComment">
+    <label>Source</label>
+    <input id="qSource">
+    <p class="hint">Source is also copied to object tags if missing.</p>
     <p id="csPreview"></p>
     <div id="queueList"></div>
     <div class="sheetActions">
