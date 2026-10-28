@@ -110,10 +110,17 @@ async function openQueueSheet() {
     row.appendChild(del);
     box.appendChild(row);
   }
+  if ($('qComment')) $('qComment').value = S.comment || '';
+  if ($('qSource')) $('qSource').value = S.source || '';
   const city = rows.length ? (rows[0].city || 'Poland') : 'Poland';
-  $('csPreview').textContent = rows.length
-    ? 'First changeset would carry:\n' + changesetPreview(Math.min(rows.length, S.batchSize), city)
+  const comment = $('qComment') ? $('qComment').value : (S.comment || '');
+  const src = $('qSource') ? $('qSource').value : (S.source || '');
+  const prev = rows.length
+    ? changesetPreview(Math.min(rows.length, S.batchSize), city)
+        .replace((S.comment || '') + ' — ' + city, comment + ' — ' + city)
+        .replace(S.source || '', src)
     : '';
+  $('csPreview').textContent = rows.length ? 'First changeset would carry:\n' + prev : '';
   $('queueUpload').textContent = rows.length ? 'Upload ' + rows.length : 'Upload';
   $('queueUpload').disabled = !rows.length;
   $('queueSheet').classList.add('open');
@@ -124,6 +131,9 @@ function closeQueueSheet() { $('queueSheet').classList.remove('open'); }
 async function uploadQueue() {
   const t = await token();
   if (!t) { toast('Sign in first', 'warn'); return; }
+  if ($('qComment')) S.comment = $('qComment').value;
+  if ($('qSource')) S.source = $('qSource').value;
+  await dbPut('kv', 'settings', S).catch(() => {});
   const all = (await dbAll('queue')).map((e) => Object.assign({ key: e.key }, e.val));
   if (!all.length) return;
   closeQueueSheet();
@@ -133,6 +143,11 @@ async function uploadQueue() {
   setStage('Uploading 0 / ' + all.length);
   for (let i = 0; i < all.length; i += S.batchSize) {
     const batch = all.slice(i, i + S.batchSize);
+    // Copy source tag to objects if missing
+    for (const b of batch) {
+      if (!b.tags) b.tags = {};
+      if (S.source && !b.tags.source) b.tags.source = S.source;
+    }
     const city = batch[0].city || 'Poland';
     const cs = '<osm><changeset>' +
       csTags(batch.length, city).map(([k, v]) => `<tag k="${esc(k)}" v="${esc(v)}"/>`).join('') +

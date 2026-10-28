@@ -78,6 +78,17 @@ function bindUI() {
   $('pickBtn').onclick = () => $('file').click();
   $('loadAreaBtn').onclick = loadArea;
   $('areaBtn').onclick = changeArea;
+  if ($('goToBtn')) {
+    $('goToBtn').onclick = () => {
+      const s = prompt('Enter lat, lon (e.g. 52.23, 21.01)');
+      if (!s) return;
+      const m = s.replace(/\s+/g, '').match(/(-?\d+(?:\.\d+)?)[,;]+(-?\d+(?:\.\d+)?)/);
+      if (!m) { toast('Bad coordinates', 'warn'); return; }
+      const lat = parseFloat(m[1]), lon = parseFloat(m[2]);
+      if (!isFinite(lat) || !isFinite(lon)) { toast('Bad coordinates', 'warn'); return; }
+      map.setView([lat, lon], Math.max(map.getZoom(), 18), { animate: true });
+    };
+  }
   $('lcBtn').onclick = loadLandCover;
   paintLcStatus();
   $('getDataBtn').onclick = async () => {
