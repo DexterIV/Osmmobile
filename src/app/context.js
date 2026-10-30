@@ -12,8 +12,9 @@
 const CTX_CELL_LAT = 0.003;    // ~334 m
 const CTX_CELL_LON = 0.005;    // ~308 m at 52 N
 const ctxCells = new Map();    // key -> {ways, addrs} | 'loading' | 'failed'
-const ctxCellTries = new Map(); // key -> extra attempts made after a first failure
+const ctxCellTries = new Map(); // key -> failed attempts so far
 const ctxWarned = new Set();   // keys whose repeated failure was already announced
+const ctxLastFail = new Map(); // key -> when the last load failed; retries cool down
 
 function ctxCellKey(lat, lon) {
   return Math.floor(lat / CTX_CELL_LAT) + '/' + Math.floor(lon / CTX_CELL_LON);
@@ -59,6 +60,35 @@ function ctxNear(lat, lon) {
   return { ways, addrs };
 }
 
+// Which cells the candidate on screen actually needs loaded: its own cell, the
+// cells a 30 m duplicate-check radius bubbles into across a split, and every
+// cell holding a context dot inside the 150 m view — dots mark buildings whose
+// footprint the reviewer is about to need. Everything already loaded still
+// counts in the verdicts; this only decides fetches. A rural candidate usually
+// needs just its own cell, which is what keeps a fast walk through the queue
+// from sending enough /map calls per step for the OSM API to start throttling
+// (a throttled cell reads on screen as a missing outline). Without the Overpass
+// dot index — it fails at boot now and then — the filter is impossible, so the
+// whole envelope is needed, as before.
+const CTX_DUP_M = 30;                       // duplicateAddress's search radius
+const CTX_DUP_LAT = CTX_DUP_M / 111320;
+const CTX_DUP_LON = CTX_DUP_M / 69500;
+function ctxCellsNeeded(lat, lon, pts) {
+  const envelope = ctxCellsNear(lat, lon);
+  if (!pts || !pts.length) return envelope;
+  const need = new Set([ctxCellKey(lat, lon)]);
+  for (const ya of [Math.floor((lat - CTX_DUP_LAT) / CTX_CELL_LAT),
+                    Math.floor((lat + CTX_DUP_LAT) / CTX_CELL_LAT)])
+    for (const xa of [Math.floor((lon - CTX_DUP_LON) / CTX_CELL_LON),
+                      Math.floor((lon + CTX_DUP_LON) / CTX_CELL_LON)])
+      need.add(ya + '/' + xa);
+  for (const [pla, plo] of pts) {
+    if (metresBetween([lat, lon], [pla, plo]) > CTX_VIEW_M) continue;
+    need.add(ctxCellKey(pla, plo));
+  }
+  return envelope.filter((it) => need.has(it.key));
+}
+
 async function loadCtxCell(lat, lon) {
   const key = ctxCellKey(lat, lon);
   const known = ctxCells.get(key);
@@ -87,9 +117,19 @@ async function loadCtxCell(lat, lon) {
     dbPut('ctx', dbKey, { t: Date.now(), data }).catch(() => {});
     return data;
   } catch (err) {
-    // Leave it failed rather than retrying on every redraw; panning back later
-    // clears nothing, but a reload will try again.
+    // Leave it failed rather than retrying on every redraw; drawContext retries
+    // after a cool-down instead, because the OSM API 503s in bursts and a
+    // give-up that lasts until reload loses an outline the reviewer needs.
     ctxCells.set(key, 'failed');
+    ctxLastFail.set(key, Date.now());
+    const tries = (ctxCellTries.get(key) || 0) + 1;
+    ctxCellTries.set(key, tries);
+    // One quiet failure is a normal burst; say something only once a second
+    // attempt has failed too, and only once for the session.
+    if (tries >= 2 && !ctxWarned.has(key)) {
+      ctxWarned.add(key);
+      toast('OSM context unavailable here — existing footprints may be missing', 'warn');
+    }
     return null;
   }
 }
@@ -262,40 +302,36 @@ function drawContext() {
   if (!c) return;
   const centre = c.kind === 'address' ? c.ring[0] : c.centroid;
 
-  // Load every cell the 150 m view touches, not just the one the candidate sits
-  // in (see ctxCellsNear for the boundary case that motivated this).
+  // Load just the cells this candidate needs (normally its own; see
+  // ctxCellsNeeded), one at a time, newest candidate wins. Whatever is cached
+  // or already loaded draws immediately; each settle repaint upgrades dots to
+  // footprints as the missing cells arrive. Waiting for every envelope cell
+  // before drawing anything was tried and read as a regression: one slow cell
+  // blanked the whole context layer for up to ~75 s per candidate. Firing all
+  // of them concurrently was also tried: a fast walk through the queue steps a
+  // cell or two per candidate, and 4-way /map bursts per step get throttled —
+  // at the buildings the reviewer is heading for next, no less.
   {
-    let pending = 0, scheduled = false;
-    for (const it of ctxCellsNear(centre[0], centre[1])) {
+    const now = Date.now();
+    const need = ctxCellsNeeded(centre[0], centre[1], ctxPts).filter((it) => {
       const have = ctxCells.get(it.key);
-      // Loaded or in flight: leave it alone. Kicking a cached cell here would
-      // resolve immediately, repaint, and recurse into itself forever.
-      if (have && have !== 'failed') continue;
-      if (have === 'failed') {
-        // One retry per cell; after that the failure is announced once and the
-        // view keeps its bare dots rather than looping on a dead endpoint.
-        if ((ctxCellTries.get(it.key) || 0) >= 1) {
-          if (!ctxWarned.has(it.key)) {
-            ctxWarned.add(it.key);
-            toast('OSM context unavailable here — existing footprints may be missing', 'warn');
-          }
-          continue;
-        }
-        ctxCellTries.set(it.key, (ctxCellTries.get(it.key) || 0) + 1);
-        ctxCells.delete(it.key);
+      // Loaded or in flight: leave it alone (kicking a cached cell here would
+      // resolve immediately, repaint, and recurse into itself forever).
+      if (have && have !== 'failed') return false;
+      // A failed cell cools down for a minute before the next try, so a burst
+      // of 503s costs one request a minute instead of one per pan.
+      if (have === 'failed' && now - (ctxLastFail.get(it.key) || 0) < 60000) return false;
+      ctxCells.delete(it.key);
+      return true;
+    });
+    (async () => {
+      while (need.length) {
+        const it = need.shift();
+        if (cur() !== c) return; // the reviewer moved on; the next draw re-plans
+        await loadCtxCell(it.lat, it.lon).catch(() => {});
+        if (cur() === c) { drawContext(); paintChrome(); }
       }
-      pending++;
-      loadCtxCell(it.lat, it.lon).then(() => {
-        if (!scheduled && cur() === c) {
-          scheduled = true;
-          drawContext();
-          paintChrome();
-        }
-      });
-    }
-    // Anything still in flight: draw nothing yet, the settle repaint does it —
-    // dots without their footprints are exactly what we are fixing here.
-    if (pending > 0) return;
+    })();
   }
 
   const near = ctxNear(centre[0], centre[1]);
