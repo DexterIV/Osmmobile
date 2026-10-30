@@ -24,7 +24,7 @@ const make = new Function('Math',
   src.slice(from, to) +
   src.slice(cellFrom, cellTo) +
   '; return { pointInRing, ringCentroidSimple, overlapVerdict, duplicateAddress, metresBetween,' +
-  ' ctxCellKey, ctxCellsNear, ctxNear, ctxCells };');
+  ' ctxCellKey, ctxCellsNear, ctxNear, ctxCellsNeeded, ctxCells };');
 const C = make(Math);
 
 let pass = 0;
@@ -203,6 +203,31 @@ t('the dot and the candidate land in different context cells', () => {
   assert.ok(keys.includes('17160/3834'), 'candidate cell must be in the view envelope');
   assert.ok(keys.includes('17160/3835'),
     'the 150 m envelope must spill east of the 19.175 split, got: ' + keys.join(' '));
+});
+
+t('ctxCellsNeeded fetches exactly the cells this candidate needs', () => {
+  // The candidate's own cell, plus every cell its 30 m duplicate-check ball
+  // touches (it spills east of the split at 37A), plus the cell holding the
+  // duplicated building's dot. The far-away dot must not drag its cell in.
+  const need = C.ctxCellsNeeded(CAND_37A[0], CAND_37A[1],
+    [[51.4815032, 19.1752709], [61.0, 21.0]]);
+  assert.deepEqual(need.map((it) => it.key).sort(), ['17160/3834', '17160/3835']);
+});
+
+t('a dot near the boundary pulls its cell in; a far one does not', () => {
+  // Candidate in the middle of its cell: the 30 m ball stays inside it, and
+  // without a nearby dot no neighbour is needed at all.
+  const own = C.ctxCellsNeeded(51.4815, 19.1765, [[61.0, 21.0]]);
+  assert.deepEqual(own.map((it) => it.key), ['17160/3835']);
+  // ...but a dot ~142 m west, just inside the 150 m view, drags cell 3834 in.
+  const withDot = C.ctxCellsNeeded(51.4815, 19.1765, [[51.4818, 19.1745]]);
+  assert.deepEqual(withDot.map((it) => it.key).sort(), ['17160/3834', '17160/3835']);
+});
+
+t('without a dot index the whole view envelope is needed again', () => {
+  const full = C.ctxCellsNear(CAND_37A[0], CAND_37A[1]).length;
+  assert.equal(C.ctxCellsNeeded(CAND_37A[0], CAND_37A[1], null).length, full);
+  assert.equal(C.ctxCellsNeeded(CAND_37A[0], CAND_37A[1], []).length, full);
 });
 
 t('with only the west cell loaded, nothing covers the dot (the old bug)', () => {
