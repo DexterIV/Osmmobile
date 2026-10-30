@@ -1,0 +1,315 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="openstreetmap-cgimap 2.1.0 (2880220 spike-06.openstreetmap.org)" copyright="OpenStreetMap and contributors" attribution="http://www.openstreetmap.org/copyright" license="http://opendatacommons.org/licenses/odbl/1-0/">
+ <bounds minlat="51.4800000" minlon="19.1700000" maxlat="51.4830000" maxlon="19.1750000"/>
+ <node id="4289366658" visible="true" version="1" changeset="40555560" timestamp="2016-07-07T20:43:31Z" user="Zibi-importy" uid="1879367" lat="51.4817760" lon="19.1736891">
+  <tag k="addr:city:simc" v="0700594"/>
+  <tag k="addr:housenumber" v="39"/>
+  <tag k="addr:place" v="Józefatów"/>
+  <tag k="addr:postcode" v="98-113"/>
+  <tag k="source:addr" v="emuia.gugik.gov.pl"/>
+ </node>
+ <node id="4289366921" visible="true" version="1" changeset="40555560" timestamp="2016-07-07T20:43:36Z" user="Zibi-importy" uid="1879367" lat="51.4822159" lon="19.1700027">
+  <tag k="addr:city:simc" v="0700594"/>
+  <tag k="addr:housenumber" v="40"/>
+  <tag k="addr:place" v="Józefatów"/>
+  <tag k="addr:postcode" v="98-113"/>
+  <tag k="source:addr" v="emuia.gugik.gov.pl"/>
+ </node>
+ <node id="4289366947" visible="true" version="1" changeset="40555560" timestamp="2016-07-07T20:43:38Z" user="Zibi-importy" uid="1879367" lat="51.4822604" lon="19.1708419">
+  <tag k="addr:city:simc" v="0700594"/>
+  <tag k="addr:housenumber" v="41a"/>
+  <tag k="addr:place" v="Józefatów"/>
+  <tag k="addr:postcode" v="98-113"/>
+  <tag k="source:addr" v="emuia.gugik.gov.pl"/>
+ </node>
+ <node id="7920497998" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:17Z" user="WojtekK" uid="352700" lat="51.4823962" lon="19.1705056"/>
+ <node id="7920497999" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:17Z" user="WojtekK" uid="352700" lat="51.4822669" lon="19.1704420"/>
+ <node id="7920498000" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:17Z" user="WojtekK" uid="352700" lat="51.4822456" lon="19.1705531"/>
+ <node id="7920498001" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:17Z" user="WojtekK" uid="352700" lat="51.4823749" lon="19.1706167"/>
+ <node id="7920501279" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:17Z" user="WojtekK" uid="352700" lat="51.4818292" lon="19.1737374"/>
+ <node id="7920501280" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:17Z" user="WojtekK" uid="352700" lat="51.4818425" lon="19.1736427"/>
+ <node id="7920501281" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:17Z" user="WojtekK" uid="352700" lat="51.4817997" lon="19.1736272"/>
+ <node id="7920501282" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:17Z" user="WojtekK" uid="352700" lat="51.4817395" lon="19.1736054"/>
+ <node id="7920501283" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:17Z" user="WojtekK" uid="352700" lat="51.4817181" lon="19.1737567"/>
+ <node id="7920501284" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:17Z" user="WojtekK" uid="352700" lat="51.4817785" lon="19.1737786"/>
+ <node id="7920501285" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:17Z" user="WojtekK" uid="352700" lat="51.4817865" lon="19.1737220"/>
+ <node id="7920502176" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:17Z" user="WojtekK" uid="352700" lat="51.4818907" lon="19.1706264"/>
+ <node id="7920502177" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:17Z" user="WojtekK" uid="352700" lat="51.4818400" lon="19.1708910"/>
+ <node id="7920502178" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:17Z" user="WojtekK" uid="352700" lat="51.4819041" lon="19.1709225"/>
+ <node id="7920502179" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:17Z" user="WojtekK" uid="352700" lat="51.4819548" lon="19.1706579"/>
+ <node id="7920502192" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:17Z" user="WojtekK" uid="352700" lat="51.4819017" lon="19.1732048"/>
+ <node id="7920502193" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:17Z" user="WojtekK" uid="352700" lat="51.4818163" lon="19.1731698"/>
+ <node id="7920502194" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:17Z" user="WojtekK" uid="352700" lat="51.4817910" lon="19.1733274"/>
+ <node id="7920502195" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:17Z" user="WojtekK" uid="352700" lat="51.4818764" lon="19.1733625"/>
+ <node id="7920503504" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:18Z" user="WojtekK" uid="352700" lat="51.4819121" lon="19.1710811"/>
+ <node id="7920503505" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:18Z" user="WojtekK" uid="352700" lat="51.4819277" lon="19.1709927"/>
+ <node id="7920503506" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:18Z" user="WojtekK" uid="352700" lat="51.4818280" lon="19.1709474"/>
+ <node id="7920503507" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:18Z" user="WojtekK" uid="352700" lat="51.4818123" lon="19.1710358"/>
+ <node id="7920503617" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:18Z" user="WojtekK" uid="352700" lat="51.4819863" lon="19.1717587"/>
+ <node id="7920503618" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:18Z" user="WojtekK" uid="352700" lat="51.4817845" lon="19.1716754"/>
+ <node id="7920503619" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:18Z" user="WojtekK" uid="352700" lat="51.4817574" lon="19.1718439"/>
+ <node id="7920503620" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:18Z" user="WojtekK" uid="352700" lat="51.4819593" lon="19.1719273"/>
+ <node id="7920503655" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:18Z" user="WojtekK" uid="352700" lat="51.4817165" lon="19.1711729"/>
+ <node id="7920503656" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:18Z" user="WojtekK" uid="352700" lat="51.4816608" lon="19.1715007"/>
+ <node id="7920503657" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:18Z" user="WojtekK" uid="352700" lat="51.4817290" lon="19.1715305"/>
+ <node id="7920503658" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:18Z" user="WojtekK" uid="352700" lat="51.4817848" lon="19.1712027"/>
+ <node id="7920503700" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:18Z" user="WojtekK" uid="352700" lat="51.4817768" lon="19.1729722"/>
+ <node id="7920503701" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:18Z" user="WojtekK" uid="352700" lat="51.4816518" lon="19.1729244"/>
+ <node id="7920503702" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:18Z" user="WojtekK" uid="352700" lat="51.4816406" lon="19.1730002"/>
+ <node id="7920503703" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:18Z" user="WojtekK" uid="352700" lat="51.4817654" lon="19.1730477"/>
+ <node id="7920505430" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:19Z" user="WojtekK" uid="352700" lat="51.4814623" lon="19.1749773"/>
+ <node id="7920505431" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:19Z" user="WojtekK" uid="352700" lat="51.4813778" lon="19.1749407"/>
+ <node id="7920505432" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:19Z" user="WojtekK" uid="352700" lat="51.4813662" lon="19.1750089"/>
+ <node id="7920505433" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:19Z" user="WojtekK" uid="352700" lat="51.4814507" lon="19.1750457"/>
+ <node id="7920505790" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:19Z" user="WojtekK" uid="352700" lat="51.4820970" lon="19.1735381"/>
+ <node id="7920505791" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:19Z" user="WojtekK" uid="352700" lat="51.4821948" lon="19.1735788"/>
+ <node id="7920505792" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:19Z" user="WojtekK" uid="352700" lat="51.4822148" lon="19.1734551"/>
+ <node id="7920505793" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:19Z" user="WojtekK" uid="352700" lat="51.4821171" lon="19.1734144"/>
+ <node id="7920507811" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:21Z" user="WojtekK" uid="352700" lat="51.4823460" lon="19.1734981"/>
+ <node id="7920507812" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:21Z" user="WojtekK" uid="352700" lat="51.4824637" lon="19.1735402"/>
+ <node id="7920507813" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:21Z" user="WojtekK" uid="352700" lat="51.4824754" lon="19.1734558"/>
+ <node id="7920507814" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:21Z" user="WojtekK" uid="352700" lat="51.4823577" lon="19.1734137"/>
+ <node id="7920507896" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:21Z" user="WojtekK" uid="352700" lat="51.4823145" lon="19.1707834"/>
+ <node id="7920507897" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:21Z" user="WojtekK" uid="352700" lat="51.4822306" lon="19.1707487"/>
+ <node id="7920507898" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:21Z" user="WojtekK" uid="352700" lat="51.4822062" lon="19.1709001"/>
+ <node id="7920507899" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:21Z" user="WojtekK" uid="352700" lat="51.4822902" lon="19.1709349"/>
+ <node id="7920508286" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:21Z" user="WojtekK" uid="352700" lat="51.4821017" lon="19.1712682"/>
+ <node id="7920508287" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:21Z" user="WojtekK" uid="352700" lat="51.4819027" lon="19.1711786"/>
+ <node id="7920508288" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:21Z" user="WojtekK" uid="352700" lat="51.4818906" lon="19.1712479"/>
+ <node id="7920508289" visible="true" version="1" changeset="91116985" timestamp="2020-09-18T14:05:21Z" user="WojtekK" uid="352700" lat="51.4820896" lon="19.1713375"/>
+ <node id="7920508800" visible="true" version="1" changeset="91116987" timestamp="2020-09-18T14:05:22Z" user="WojtekK" uid="352700" lat="51.4821733" lon="19.1715101"/>
+ <node id="7920508801" visible="true" version="1" changeset="91116987" timestamp="2020-09-18T14:05:22Z" user="WojtekK" uid="352700" lat="51.4820702" lon="19.1714669"/>
+ <node id="7920508802" visible="true" version="1" changeset="91116987" timestamp="2020-09-18T14:05:22Z" user="WojtekK" uid="352700" lat="51.4820370" lon="19.1716637"/>
+ <node id="7920508803" visible="true" version="1" changeset="91116987" timestamp="2020-09-18T14:05:22Z" user="WojtekK" uid="352700" lat="51.4821400" lon="19.1717083"/>
+ <node id="7920508983" visible="true" version="1" changeset="91116987" timestamp="2020-09-18T14:05:22Z" user="WojtekK" uid="352700" lat="51.4821099" lon="19.1734780">
+  <tag k="addr:city:simc" v="0700594"/>
+  <tag k="addr:housenumber" v="40A"/>
+  <tag k="addr:place" v="Józefatów"/>
+  <tag k="addr:postcode" v="98-113"/>
+  <tag k="source:addr" v="gugik.gov.pl"/>
+ </node>
+ <node id="7920508994" visible="true" version="1" changeset="91116987" timestamp="2020-09-18T14:05:22Z" user="WojtekK" uid="352700" lat="51.4818880" lon="19.1732784">
+  <tag k="addr:city:simc" v="0700594"/>
+  <tag k="addr:housenumber" v="37"/>
+  <tag k="addr:place" v="Józefatów"/>
+  <tag k="addr:postcode" v="98-113"/>
+  <tag k="source:addr" v="gugik.gov.pl"/>
+ </node>
+ <node id="8923311804" visible="true" version="1" changeset="108070961" timestamp="2021-07-15T19:46:17Z" user="Cristoffs" uid="6765127" lat="51.4817847" lon="19.1674966"/>
+ <node id="8923311805" visible="true" version="1" changeset="108070961" timestamp="2021-07-15T19:46:17Z" user="Cristoffs" uid="6765127" lat="51.4825137" lon="19.1678118"/>
+ <node id="8923311806" visible="true" version="1" changeset="108070961" timestamp="2021-07-15T19:46:17Z" user="Cristoffs" uid="6765127" lat="51.4824021" lon="19.1684174"/>
+ <node id="8923311807" visible="true" version="1" changeset="108070961" timestamp="2021-07-15T19:46:17Z" user="Cristoffs" uid="6765127" lat="51.4822487" lon="19.1683558"/>
+ <node id="8923311808" visible="true" version="1" changeset="108070961" timestamp="2021-07-15T19:46:17Z" user="Cristoffs" uid="6765127" lat="51.4821635" lon="19.1688720"/>
+ <node id="8923311809" visible="true" version="1" changeset="108070961" timestamp="2021-07-15T19:46:17Z" user="Cristoffs" uid="6765127" lat="51.4822598" lon="19.1689238"/>
+ <node id="8923311810" visible="true" version="1" changeset="108070961" timestamp="2021-07-15T19:46:17Z" user="Cristoffs" uid="6765127" lat="51.4820148" lon="19.1704893"/>
+ <node id="8923311811" visible="true" version="1" changeset="108070961" timestamp="2021-07-15T19:46:17Z" user="Cristoffs" uid="6765127" lat="51.4818388" lon="19.1704544"/>
+ <node id="8923311812" visible="true" version="1" changeset="108070961" timestamp="2021-07-15T19:46:17Z" user="Cristoffs" uid="6765127" lat="51.4814499" lon="19.1719222"/>
+ <node id="8923311813" visible="true" version="1" changeset="108070961" timestamp="2021-07-15T19:46:17Z" user="Cristoffs" uid="6765127" lat="51.4821336" lon="19.1722697"/>
+ <node id="8923311814" visible="true" version="1" changeset="108070961" timestamp="2021-07-15T19:46:17Z" user="Cristoffs" uid="6765127" lat="51.4830390" lon="19.1673773"/>
+ <node id="8923311815" visible="true" version="1" changeset="108070961" timestamp="2021-07-15T19:46:17Z" user="Cristoffs" uid="6765127" lat="51.4829987" lon="19.1672933"/>
+ <node id="8923311816" visible="true" version="1" changeset="108070961" timestamp="2021-07-15T19:46:17Z" user="Cristoffs" uid="6765127" lat="51.4828883" lon="19.1704533"/>
+ <node id="8923334217" visible="true" version="1" changeset="108070961" timestamp="2021-07-15T19:46:17Z" user="Cristoffs" uid="6765127" lat="51.4829188" lon="19.1702856"/>
+ <node id="8923334218" visible="true" version="1" changeset="108070961" timestamp="2021-07-15T19:46:17Z" user="Cristoffs" uid="6765127" lat="51.4828925" lon="19.1702734"/>
+ <node id="8923334219" visible="true" version="1" changeset="108070961" timestamp="2021-07-15T19:46:17Z" user="Cristoffs" uid="6765127" lat="51.4828030" lon="19.1704134"/>
+ <node id="8923334220" visible="true" version="1" changeset="108070961" timestamp="2021-07-15T19:46:17Z" user="Cristoffs" uid="6765127" lat="51.4828621" lon="19.1704410"/>
+ <node id="8923334221" visible="true" version="1" changeset="108070961" timestamp="2021-07-15T19:46:17Z" user="Cristoffs" uid="6765127" lat="51.4829007" lon="19.1702285"/>
+ <node id="8923334222" visible="true" version="1" changeset="108070961" timestamp="2021-07-15T19:46:17Z" user="Cristoffs" uid="6765127" lat="51.4828416" lon="19.1702009"/>
+ <node id="11171492175" visible="true" version="1" changeset="140887063" timestamp="2023-09-06T09:45:24Z" user="jslawin" uid="8477764" lat="51.4818784" lon="19.1705175"/>
+ <node id="11171492176" visible="true" version="1" changeset="140887063" timestamp="2023-09-06T09:45:24Z" user="jslawin" uid="8477764" lat="51.4818667" lon="19.1705773"/>
+ <node id="11171492177" visible="true" version="1" changeset="140887063" timestamp="2023-09-06T09:45:24Z" user="jslawin" uid="8477764" lat="51.4818884" lon="19.1705882"/>
+ <node id="11171492178" visible="true" version="1" changeset="140887063" timestamp="2023-09-06T09:45:24Z" user="jslawin" uid="8477764" lat="51.4819645" lon="19.1706263"/>
+ <node id="11171492179" visible="true" version="1" changeset="140887063" timestamp="2023-09-06T09:45:24Z" user="jslawin" uid="8477764" lat="51.4819762" lon="19.1705665"/>
+ <node id="11171492180" visible="true" version="1" changeset="140887063" timestamp="2023-09-06T09:45:24Z" user="jslawin" uid="8477764" lat="51.4820536" lon="19.1711344"/>
+ <node id="11171492181" visible="true" version="1" changeset="140887063" timestamp="2023-09-06T09:45:24Z" user="jslawin" uid="8477764" lat="51.4821004" lon="19.1711540"/>
+ <node id="11171492182" visible="true" version="1" changeset="140887063" timestamp="2023-09-06T09:45:24Z" user="jslawin" uid="8477764" lat="51.4821351" lon="19.1711687"/>
+ <node id="11171492183" visible="true" version="1" changeset="140887063" timestamp="2023-09-06T09:45:24Z" user="jslawin" uid="8477764" lat="51.4821478" lon="19.1710908"/>
+ <node id="11171492184" visible="true" version="1" changeset="140887063" timestamp="2023-09-06T09:45:24Z" user="jslawin" uid="8477764" lat="51.4821131" lon="19.1710761"/>
+ <node id="11171492185" visible="true" version="1" changeset="140887063" timestamp="2023-09-06T09:45:24Z" user="jslawin" uid="8477764" lat="51.4821165" lon="19.1710555"/>
+ <node id="11171492186" visible="true" version="1" changeset="140887063" timestamp="2023-09-06T09:45:24Z" user="jslawin" uid="8477764" lat="51.4820697" lon="19.1710359"/>
+ <node id="11171492187" visible="true" version="1" changeset="140887063" timestamp="2023-09-06T09:45:24Z" user="jslawin" uid="8477764" lat="51.4820666" lon="19.1710549"/>
+ <node id="11171492188" visible="true" version="1" changeset="140887063" timestamp="2023-09-06T09:45:24Z" user="jslawin" uid="8477764" lat="51.4820229" lon="19.1710366"/>
+ <node id="11171492189" visible="true" version="1" changeset="140887063" timestamp="2023-09-06T09:45:24Z" user="jslawin" uid="8477764" lat="51.4820099" lon="19.1711161"/>
+ <way id="848898574" visible="true" version="1" changeset="91116987" timestamp="2020-09-18T14:05:23Z" user="WojtekK" uid="352700">
+  <nd ref="7920498001"/>
+  <nd ref="7920498000"/>
+  <nd ref="7920497999"/>
+  <nd ref="7920497998"/>
+  <nd ref="7920498001"/>
+  <tag k="building" v="yes"/>
+  <tag k="source" v="www.geoportal.gov.pl"/>
+ </way>
+ <way id="848898762" visible="true" version="1" changeset="91116987" timestamp="2020-09-18T14:05:23Z" user="WojtekK" uid="352700">
+  <nd ref="7920501285"/>
+  <nd ref="7920501284"/>
+  <nd ref="7920501283"/>
+  <nd ref="7920501282"/>
+  <nd ref="7920501281"/>
+  <nd ref="7920501280"/>
+  <nd ref="7920501279"/>
+  <nd ref="7920501285"/>
+  <tag k="building" v="yes"/>
+  <tag k="source" v="www.geoportal.gov.pl"/>
+ </way>
+ <way id="848898944" visible="true" version="1" changeset="91116987" timestamp="2020-09-18T14:05:23Z" user="WojtekK" uid="352700">
+  <nd ref="7920502179"/>
+  <nd ref="7920502178"/>
+  <nd ref="7920502177"/>
+  <nd ref="7920502176"/>
+  <nd ref="7920502179"/>
+  <tag k="building" v="yes"/>
+  <tag k="source" v="www.geoportal.gov.pl"/>
+ </way>
+ <way id="848898948" visible="true" version="1" changeset="91116987" timestamp="2020-09-18T14:05:23Z" user="WojtekK" uid="352700">
+  <nd ref="7920502195"/>
+  <nd ref="7920502194"/>
+  <nd ref="7920502193"/>
+  <nd ref="7920502192"/>
+  <nd ref="7920502195"/>
+  <tag k="building" v="yes"/>
+  <tag k="source" v="www.geoportal.gov.pl"/>
+ </way>
+ <way id="848899242" visible="true" version="1" changeset="91116987" timestamp="2020-09-18T14:05:23Z" user="WojtekK" uid="352700">
+  <nd ref="7920503507"/>
+  <nd ref="7920503506"/>
+  <nd ref="7920503505"/>
+  <nd ref="7920503504"/>
+  <nd ref="7920503507"/>
+  <tag k="building" v="yes"/>
+  <tag k="source" v="www.geoportal.gov.pl"/>
+ </way>
+ <way id="848899260" visible="true" version="1" changeset="91116987" timestamp="2020-09-18T14:05:23Z" user="WojtekK" uid="352700">
+  <nd ref="7920503620"/>
+  <nd ref="7920503619"/>
+  <nd ref="7920503618"/>
+  <nd ref="7920503617"/>
+  <nd ref="7920503620"/>
+  <tag k="building" v="yes"/>
+  <tag k="source" v="www.geoportal.gov.pl"/>
+ </way>
+ <way id="848899269" visible="true" version="1" changeset="91116987" timestamp="2020-09-18T14:05:23Z" user="WojtekK" uid="352700">
+  <nd ref="7920503658"/>
+  <nd ref="7920503657"/>
+  <nd ref="7920503656"/>
+  <nd ref="7920503655"/>
+  <nd ref="7920503658"/>
+  <tag k="building" v="yes"/>
+  <tag k="source" v="www.geoportal.gov.pl"/>
+ </way>
+ <way id="848899279" visible="true" version="1" changeset="91116987" timestamp="2020-09-18T14:05:23Z" user="WojtekK" uid="352700">
+  <nd ref="7920503703"/>
+  <nd ref="7920503702"/>
+  <nd ref="7920503701"/>
+  <nd ref="7920503700"/>
+  <nd ref="7920503703"/>
+  <tag k="building" v="yes"/>
+  <tag k="source" v="www.geoportal.gov.pl"/>
+ </way>
+ <way id="848899621" visible="true" version="1" changeset="91116987" timestamp="2020-09-18T14:05:24Z" user="WojtekK" uid="352700">
+  <nd ref="7920505433"/>
+  <nd ref="7920505432"/>
+  <nd ref="7920505431"/>
+  <nd ref="7920505430"/>
+  <nd ref="7920505433"/>
+  <tag k="building" v="yes"/>
+  <tag k="source" v="www.geoportal.gov.pl"/>
+ </way>
+ <way id="848899709" visible="true" version="1" changeset="91116987" timestamp="2020-09-18T14:05:24Z" user="WojtekK" uid="352700">
+  <nd ref="7920505793"/>
+  <nd ref="7920505792"/>
+  <nd ref="7920505791"/>
+  <nd ref="7920505790"/>
+  <nd ref="7920505793"/>
+  <tag k="building" v="yes"/>
+  <tag k="source" v="www.geoportal.gov.pl"/>
+ </way>
+ <way id="848900103" visible="true" version="1" changeset="91116987" timestamp="2020-09-18T14:05:24Z" user="WojtekK" uid="352700">
+  <nd ref="7920507814"/>
+  <nd ref="7920507813"/>
+  <nd ref="7920507812"/>
+  <nd ref="7920507811"/>
+  <nd ref="7920507814"/>
+  <tag k="building" v="yes"/>
+  <tag k="source" v="www.geoportal.gov.pl"/>
+ </way>
+ <way id="848900121" visible="true" version="1" changeset="91116987" timestamp="2020-09-18T14:05:24Z" user="WojtekK" uid="352700">
+  <nd ref="7920507899"/>
+  <nd ref="7920507898"/>
+  <nd ref="7920507897"/>
+  <nd ref="7920507896"/>
+  <nd ref="7920507899"/>
+  <tag k="building" v="yes"/>
+  <tag k="source" v="www.geoportal.gov.pl"/>
+ </way>
+ <way id="848900200" visible="true" version="1" changeset="91116987" timestamp="2020-09-18T14:05:24Z" user="WojtekK" uid="352700">
+  <nd ref="7920508289"/>
+  <nd ref="7920508288"/>
+  <nd ref="7920508287"/>
+  <nd ref="7920508286"/>
+  <nd ref="7920508289"/>
+  <tag k="building" v="yes"/>
+  <tag k="source" v="www.geoportal.gov.pl"/>
+ </way>
+ <way id="848900293" visible="true" version="1" changeset="91116987" timestamp="2020-09-18T14:05:24Z" user="WojtekK" uid="352700">
+  <nd ref="7920508803"/>
+  <nd ref="7920508802"/>
+  <nd ref="7920508801"/>
+  <nd ref="7920508800"/>
+  <nd ref="7920508803"/>
+  <tag k="building" v="yes"/>
+  <tag k="source" v="www.geoportal.gov.pl"/>
+ </way>
+ <way id="964695476" visible="true" version="1" changeset="108070961" timestamp="2021-07-15T19:46:17Z" user="Cristoffs" uid="6765127">
+  <nd ref="8923311815"/>
+  <nd ref="8923311814"/>
+  <nd ref="8923311813"/>
+  <nd ref="8923311812"/>
+  <nd ref="8923311811"/>
+  <nd ref="8923311810"/>
+  <nd ref="8923311809"/>
+  <nd ref="8923311808"/>
+  <nd ref="8923311807"/>
+  <nd ref="8923311806"/>
+  <nd ref="8923311805"/>
+  <nd ref="8923311804"/>
+  <nd ref="8923311815"/>
+  <tag k="landuse" v="residential"/>
+ </way>
+ <way id="964695477" visible="true" version="1" changeset="108070961" timestamp="2021-07-15T19:46:17Z" user="Cristoffs" uid="6765127">
+  <nd ref="8923334222"/>
+  <nd ref="8923334221"/>
+  <nd ref="8923334218"/>
+  <nd ref="8923334217"/>
+  <nd ref="8923311816"/>
+  <nd ref="8923334220"/>
+  <nd ref="8923334219"/>
+  <nd ref="8923334222"/>
+  <tag k="building" v="yes"/>
+ </way>
+ <way id="1205444852" visible="true" version="1" changeset="140887063" timestamp="2023-09-06T09:45:24Z" user="jslawin" uid="8477764">
+  <nd ref="11171492179"/>
+  <nd ref="11171492178"/>
+  <nd ref="11171492177"/>
+  <nd ref="11171492176"/>
+  <nd ref="11171492175"/>
+  <nd ref="11171492179"/>
+  <tag k="building" v="outbuilding"/>
+  <tag k="building:levels" v="1"/>
+  <tag k="source:building" v="BDOT"/>
+ </way>
+ <way id="1205444853" visible="true" version="1" changeset="140887063" timestamp="2023-09-06T09:45:24Z" user="jslawin" uid="8477764">
+  <nd ref="11171492189"/>
+  <nd ref="11171492188"/>
+  <nd ref="11171492187"/>
+  <nd ref="11171492186"/>
+  <nd ref="11171492185"/>
+  <nd ref="11171492184"/>
+  <nd ref="11171492183"/>
+  <nd ref="11171492182"/>
+  <nd ref="11171492181"/>
+  <nd ref="11171492180"/>
+  <nd ref="11171492189"/>
+  <tag k="building" v="outbuilding"/>
+  <tag k="building:levels" v="1"/>
+  <tag k="source:building" v="BDOT"/>
+ </way>
+</osm>

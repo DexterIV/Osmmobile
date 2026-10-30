@@ -8,14 +8,20 @@ function paintChrome() {
   let note = '';
   if (c) {
     const centre = c.kind === 'address' ? c.ring[0] : c.centroid;
-    const cell = ctxCells.get(ctxCellKey(centre[0], centre[1]));
-    if (cell && cell !== 'loading' && cell !== 'failed') {
-      const v = overlapVerdict(c, cell);
+    // The merged view, not the candidate's own cell: a building 18 m east of a
+    // cell border must decide the verdict of a candidate west of it.
+    const near = ctxNear(centre[0], centre[1]);
+    const loadingNear = ctxCellsNear(centre[0], centre[1]).some((it) => {
+      const s = ctxCells.get(it.key);
+      return !s || s === 'loading';
+    });
+    if (near.ways.length || near.addrs.length) {
+      const v = overlapVerdict(c, near);
       if (v && v.tier !== null) { tier = v.tier; note = v.why; }
-      const dup = duplicateAddress(c, cell);
+      const dup = duplicateAddress(c, near);
       if (dup) { tier = 2; note = dup; }
-    } else if (cell === 'loading') note = 'checking OSM…';
-    else if (cell === 'failed') note = 'OSM check failed';
+    } else if (loadingNear) note = 'checking OSM…';
+    else note = 'OSM check failed';
     // Checked last so it wins the label: overlapping something you accepted a
     // moment ago is a mistake you can still fix, where overlapping OSM might be a
     // considered decision. This check does not depend on the /map cell at all, so

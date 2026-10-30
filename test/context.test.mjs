@@ -12,11 +12,19 @@ const from = src.indexOf('function pointInRing(');
 const to = src.indexOf('function drawContext(');
 assert.ok(from > 0 && to > from, 'could not locate the context helpers in the app sources');
 
+// The cell-grid helpers (ctxCellKey, ctxCellsNear, ctxNear) live above loadCtxCell
+// and are wasm-free, so they can be sliced out and driven from a test map.
+const cellFrom = src.indexOf('const CTX_CELL_LAT');
+const cellTo = src.indexOf('async function loadCtxCell(');
+assert.ok(cellFrom > 0 && cellTo > cellFrom, 'could not locate the cell-grid helpers');
+
 const make = new Function('Math',
   'function metresBetween(a,b){var mLat=111320,mLon=111320*Math.cos(a[0]*Math.PI/180);' +
   'return Math.hypot((b[0]-a[0])*mLat,(b[1]-a[1])*mLon);}' +
   src.slice(from, to) +
-  '; return { pointInRing, ringCentroidSimple, overlapVerdict, duplicateAddress, metresBetween };');
+  src.slice(cellFrom, cellTo) +
+  '; return { pointInRing, ringCentroidSimple, overlapVerdict, duplicateAddress, metresBetween,' +
+  ' ctxCellKey, ctxCellsNear, ctxNear, ctxCells };');
 const C = make(Math);
 
 let pass = 0;
@@ -173,6 +181,54 @@ t('open ground between the real buildings stays clear', () => {
     }
   }
   assert.ok(clear > 20, 'only ' + clear + '/64 sample points read as clear — too eager');
+});
+
+// --- the Józefatów dot: a cell-boundary regression ---------------------------
+// PRG 37A sits a hair west of the lon-19.175 cell split (lon 19.1749996). Its
+// Overpass context dot 18 m to the NE belongs to a mapped building (way
+// 848899590) whose footprint lies in the NEXT cell — so the old single-cell
+// load drew the dot with nothing under it, read as "a dot instead of a
+// building". drawContext now loads every cell the 150 m view touches and
+// ctxNear merges them, so a dot inside a loaded footprint is no longer a dot.
+const westXml = readFileSync(new URL('./fixtures/osm-map-cell-jozefatow-west.xml', import.meta.url), 'utf8');
+const eastXml = readFileSync(new URL('./fixtures/osm-map-cell-jozefatow-east.xml', import.meta.url), 'utf8');
+
+const CAND_37A = [51.48141964480583, 19.174999594688416]; // lon 19.1749996
+const DOT = [51.4815002, 19.1752540]; // Overpass centroid of the duplicated building
+
+t('the dot and the candidate land in different context cells', () => {
+  assert.equal(C.ctxCellKey(CAND_37A[0], CAND_37A[1]), '17160/3834');
+  assert.equal(C.ctxCellKey(DOT[0], DOT[1]), '17160/3835');
+  const keys = C.ctxCellsNear(CAND_37A[0], CAND_37A[1]).map((it) => it.key);
+  assert.ok(keys.includes('17160/3834'), 'candidate cell must be in the view envelope');
+  assert.ok(keys.includes('17160/3835'),
+    'the 150 m envelope must spill east of the 19.175 split, got: ' + keys.join(' '));
+});
+
+t('with only the west cell loaded, nothing covers the dot (the old bug)', () => {
+  C.ctxCells.clear();
+  C.ctxCells.set('17160/3834', { ways: realFootprints(westXml), addrs: [] });
+  const near = C.ctxNear(CAND_37A[0], CAND_37A[1]);
+  assert.ok(near.ways.length >= 10, 'west cell carries the big square, got ' + near.ways.length);
+  assert.ok(!near.ways.some((w) => C.pointInRing(DOT, w.ring)),
+    'no west footprint covers the dot — this is how it showed as a bare dot');
+});
+
+t('once the east cell loads, the merged view covers the dot', () => {
+  C.ctxCells.set('17160/3835', { ways: realFootprints(eastXml), addrs: [] });
+  const near = C.ctxNear(CAND_37A[0], CAND_37A[1]);
+  const covering = near.ways.filter((w) => C.pointInRing(DOT, w.ring));
+  assert.equal(covering.length, 1,
+    'way 848899590 must surface in the merged cell and its dot dedupe hides the orphan dot');
+});
+
+t('the candidate verdict is unchanged by the wider load', () => {
+  const cand = { kind: 'address', ring: [CAND_37A], tags: { 'addr:housenumber': '37A' } };
+  const near = C.ctxNear(CAND_37A[0], CAND_37A[1]);
+  assert.equal(C.overlapVerdict(cand, near).tier, 2,
+    '37A is inside way 848899621 (which straddles the split) — a real overlap');
+  const dup = C.duplicateAddress(cand, near);
+  assert.ok(!dup || !/already/.test(dup), 'nothing at 37A duplicates its house number');
 });
 
 console.log('\ncontext: ' + pass + ' groups passed');

@@ -12,9 +12,51 @@
 const CTX_CELL_LAT = 0.003;    // ~334 m
 const CTX_CELL_LON = 0.005;    // ~308 m at 52 N
 const ctxCells = new Map();    // key -> {ways, addrs} | 'loading' | 'failed'
+const ctxCellTries = new Map(); // key -> extra attempts made after a first failure
+const ctxWarned = new Set();   // keys whose repeated failure was already announced
 
 function ctxCellKey(lat, lon) {
   return Math.floor(lat / CTX_CELL_LAT) + '/' + Math.floor(lon / CTX_CELL_LON);
+}
+
+// drawContext draws centroid dots within 150 m of the current candidate, so the
+// footprints behind those dots must load at least that far. A single cell
+// cannot guarantee it: the grid can split a hair's breadth to the left of a
+// candidate, putting a building 18 m away in a cell that never loads while this
+// candidate is current. PRG 37A at lon 19.1749996 loads the cell ending at lon
+// 19.175; the next building east lives at 19.17525, in the following cell — and
+// showed as its bare Overpass-centroid dot with no outline, read as
+// "a dot instead of a building".
+const CTX_VIEW_M = 150;                     // same radius the dot loop filters on
+const CTX_VIEW_LAT = CTX_VIEW_M / 111320;   // ~0.00135 deg
+const CTX_VIEW_LON = CTX_VIEW_M / 69500;    // ~0.00216 deg at 52 N
+
+// The cells whose intersection with that view must be loaded: the one holding
+// the candidate plus every neighbour the view spills into (usually 1, at most 4).
+function ctxCellsNear(lat, lon) {
+  const out = [];
+  const y0 = Math.floor((lat - CTX_VIEW_LAT) / CTX_CELL_LAT);
+  const y1 = Math.floor((lat + CTX_VIEW_LAT) / CTX_CELL_LAT);
+  const x0 = Math.floor((lon - CTX_VIEW_LON) / CTX_CELL_LON);
+  const x1 = Math.floor((lon + CTX_VIEW_LON) / CTX_CELL_LON);
+  for (let y = y0; y <= y1; y++)
+    for (let x = x0; x <= x1; x++)
+      out.push({ key: y + '/' + x, lat: (y + 0.5) * CTX_CELL_LAT, lon: (x + 0.5) * CTX_CELL_LON });
+  return out;
+}
+
+// Everything already loaded around the candidate, merged into one pseudo-cell
+// so overlapVerdict and duplicateAddress work without changes. Ways shared by
+// two cells appear twice; containment tests and Leaflet both tolerate that.
+function ctxNear(lat, lon) {
+  const ways = [], addrs = [];
+  for (const it of ctxCellsNear(lat, lon)) {
+    const cell = ctxCells.get(it.key);
+    if (!cell || cell === 'loading' || cell === 'failed') continue;
+    for (const w of cell.ways) ways.push(w);
+    for (const a of cell.addrs) addrs.push(a);
+  }
+  return { ways, addrs };
 }
 
 async function loadCtxCell(lat, lon) {
@@ -220,10 +262,53 @@ function drawContext() {
   if (!c) return;
   const centre = c.kind === 'address' ? c.ring[0] : c.centroid;
 
+  // Load every cell the 150 m view touches, not just the one the candidate sits
+  // in (see ctxCellsNear for the boundary case that motivated this).
+  {
+    let pending = 0, scheduled = false;
+    for (const it of ctxCellsNear(centre[0], centre[1])) {
+      const have = ctxCells.get(it.key);
+      // Loaded or in flight: leave it alone. Kicking a cached cell here would
+      // resolve immediately, repaint, and recurse into itself forever.
+      if (have && have !== 'failed') continue;
+      if (have === 'failed') {
+        // One retry per cell; after that the failure is announced once and the
+        // view keeps its bare dots rather than looping on a dead endpoint.
+        if ((ctxCellTries.get(it.key) || 0) >= 1) {
+          if (!ctxWarned.has(it.key)) {
+            ctxWarned.add(it.key);
+            toast('OSM context unavailable here — existing footprints may be missing', 'warn');
+          }
+          continue;
+        }
+        ctxCellTries.set(it.key, (ctxCellTries.get(it.key) || 0) + 1);
+        ctxCells.delete(it.key);
+      }
+      pending++;
+      loadCtxCell(it.lat, it.lon).then(() => {
+        if (!scheduled && cur() === c) {
+          scheduled = true;
+          drawContext();
+          paintChrome();
+        }
+      });
+    }
+    // Anything still in flight: draw nothing yet, the settle repaint does it —
+    // dots without their footprints are exactly what we are fixing here.
+    if (pending > 0) return;
+  }
+
+  const near = ctxNear(centre[0], centre[1]);
+
   // Faint centroid dots for whatever the cheap area-wide index knows about,
-  // so context outside the detailed cell is not simply absent.
+  // so context outside the loaded cells is not simply absent.
+  // A dot that falls inside a loaded footprint is skipped: the outline explains
+  // the building better than its centroid does, and far from the current
+  // candidate a bare dot over blank ortho reads as a bug —
+  // "a dot instead of a building".
   for (const [la, lo] of ctxPts) {
     if (metresBetween(centre, [la, lo]) > 150) continue;
+    if (near.ways.some((w) => pointInRing([la, lo], w.ring))) continue;
     L.circleMarker([la, lo], {
       radius: 3, color: '#22d3ee', weight: 1, opacity: 0.5,
       fillOpacity: 0.2, fillColor: '#22d3ee', interactive: false,
@@ -243,19 +328,13 @@ function drawContext() {
     }).addTo(ctxLayer);
   }
 
-  const cell = ctxCells.get(ctxCellKey(centre[0], centre[1]));
-  if (!cell || cell === 'loading' || cell === 'failed') {
-    // Fetch, then redraw this same candidate if it is still the current one.
-    loadCtxCell(centre[0], centre[1]).then((got) => {
-      if (got && cur() === c) { drawContext(); paintChrome(); }
-    });
-    return;
-  }
-
-  for (const w of cell.ways) {
+  for (const w of near.ways) {
     L.polygon(w.ring, {
-      color: '#22d3ee', weight: 1.5, dashArray: '4,3',
-      fillColor: '#22d3ee', fillOpacity: 0.10, interactive: false,
+      // Heavy enough to read on its own: over uncovered ortho (white tiles) the
+      // old thin dashed line all but disappeared, leaving only the centroid
+      // dot — "a dot instead of a building".
+      color: '#22d3ee', weight: 2, opacity: 0.9, dashArray: '4,3',
+      fillColor: '#22d3ee', fillOpacity: 0.14, interactive: false,
     }).addTo(ctxLayer);
     // In Poland the house number often lives on the building rather than on a
     // separate node, and an unlabelled footprint hid those addresses: the map
@@ -269,7 +348,7 @@ function drawContext() {
       }).addTo(ctxLayer);
     }
   }
-  for (const a of cell.addrs) {
+  for (const a of near.addrs) {
     L.circleMarker([a.lat, a.lon], {
       radius: 4, color: '#22d3ee', weight: 2, fillOpacity: 0.8,
       fillColor: '#0b1620', interactive: false,
