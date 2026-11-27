@@ -19,10 +19,17 @@ async function fetchAreaTiles(bounds) {
     if (L) for (const fb of L.features) {
       const f = mvtFeature(fb, L);
       if (f.type !== 3) continue;
+      // MVT 2.1 orders interior rings (negative signed area) immediately after
+      // the exterior ring (positive signed area) they belong to. Preserve holes
+      // so courtyard buildings draw and upload as multipolygons instead of solid.
+      const polys = [];
       for (const ring of f.rings) {
         if (ring.length < 3) continue;
-        // Exterior rings wind positive in tile coordinates; the rest are holes.
-        if (ringSignedArea(ring) <= 0) continue;
+        if (ringSignedArea(ring) > 0) polys.push({ outer: ring, holes: [] });
+        else if (polys.length) polys[polys.length - 1].holes.push(ring);
+      }
+      for (const poly of polys) {
+        const ring = poly.outer;
         const cut = ring.some(([px, py]) =>
           px <= 0 || py <= 0 || px >= L.extent || py >= L.extent);
         const id = f.props.id;
@@ -50,12 +57,15 @@ async function fetchAreaTiles(bounds) {
           report = { source: 'bdot10k', key: {
             PRZESTRZENNAZW: String(f.props.PRZESTRZENNAZW), LOKALNYID: String(id) } };
         }
+        const holes = poly.holes.map((h) =>
+          h.map(([px, py]) => tilePointToLatLon(TILE_DATA_Z, t.x, t.y, px, py, L.extent)));
         best.set(key, {
           cut,
           kind: 'building',
           reg,
           report,
           ring: ring.map(([px, py]) => tilePointToLatLon(TILE_DATA_Z, t.x, t.y, px, py, L.extent)),
+          holes,
           tags: tagsFromTile(f.props),
           srcId: id,
           // Provenance, kept off the uploaded tags but shown while reviewing.
@@ -190,6 +200,7 @@ function clearArea() {
   if (ctxLayer) ctxLayer.clearLayers();
   if (pendingLayer) pendingLayer.clearLayers();
   if (vertexGroup) vertexGroup.clearLayers();
+  if (snapLayer) snapLayer.clearLayers();
   ctxCells.clear();
   $('tags').innerHTML = '';
   $('qCount').textContent = '0 / 0';

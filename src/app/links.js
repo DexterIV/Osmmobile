@@ -92,8 +92,10 @@ async function openQueueSheet() {
     const tags = Object.entries(it.tags || {})
       .filter(([k]) => !S.dropKeys.includes(k))
       .map(([k, v]) => k + '=' + v).join('  ');
+    const snCount = it.snaps ? it.snaps.filter(Boolean).length : 0;
     main.innerHTML = '<div class="qTitle"><span class="k">' + esc(what) + '</span> ' + esc(title) +
-      (it.moved ? ' <span class="qMoved">· nudged</span>' : '') + '</div>' +
+      (it.moved ? ' <span class="qMoved">· nudged</span>' : '') +
+      (snCount ? ' <span class="qSnapped">· snapped (' + snCount + ')</span>' : '') + '</div>' +
       '<div class="qSub">' + esc(it.city || 'no city') + ' · ' + esc(tags || 'no tags') + '</div>';
     const del = document.createElement('button');
     del.textContent = '×';
@@ -128,6 +130,64 @@ async function openQueueSheet() {
 
 function closeQueueSheet() { $('queueSheet').classList.remove('open'); }
 
+// Fetch the live OSM state of every existing node and way referenced by snaps
+// in this batch right before upload. Context cells can be cached for up to 24 h;
+// refreshing here guarantees current version numbers (preventing 409 Conflict),
+// preserves all tags/nodes on modified ways, and drops references to any node
+// deleted in OSM while the item waited in the queue.
+async function fetchLiveOsmForBatch(batch) {
+  const nodeIds = new Set();
+  const wayIds = new Set();
+  for (const b of batch) {
+    if (!b.snaps) continue;
+    for (const s of b.snaps) {
+      if (!s) continue;
+      if (s.kind === 'node' && s.nodeId > 0) nodeIds.add(s.nodeId);
+      if (s.kind === 'edge' && s.wayId > 0) wayIds.add(s.wayId);
+    }
+  }
+  const live = { nodes: new Map(), ways: new Map() };
+  if (!nodeIds.size && !wayIds.size) return live;
+
+  const merge = (xml) => {
+    const parsed = parseLiveOsmXml(xml);
+    for (const [k, v] of parsed.nodes) live.nodes.set(k, v);
+    for (const [k, v] of parsed.ways) live.ways.set(k, v);
+  };
+
+  if (nodeIds.size) {
+    const ids = [...nodeIds];
+    try {
+      const r = await fetchOk(API + '/nodes?nodes=' + ids.join(','), { tries: 2, timeout: 15000 });
+      merge(await r.text());
+    } catch (_) {
+      // Multi-fetch returns 404 if any single id never existed; check individually.
+      for (const nid of ids) {
+        try {
+          const r = await fetchOk(API + '/node/' + nid, { tries: 1, timeout: 10000 });
+          merge(await r.text());
+        } catch (__) {}
+      }
+    }
+  }
+
+  if (wayIds.size) {
+    const ids = [...wayIds];
+    try {
+      const r = await fetchOk(API + '/ways?ways=' + ids.join(','), { tries: 2, timeout: 15000 });
+      merge(await r.text());
+    } catch (_) {
+      for (const wid of ids) {
+        try {
+          const r = await fetchOk(API + '/way/' + wid, { tries: 1, timeout: 10000 });
+          merge(await r.text());
+        } catch (__) {}
+      }
+    }
+  }
+  return live;
+}
+
 async function uploadQueue() {
   const t = await token();
   if (!t) { toast('Sign in first', 'warn'); return; }
@@ -153,15 +213,17 @@ async function uploadQueue() {
       csTags(batch.length, city).map(([k, v]) => `<tag k="${esc(k)}" v="${esc(v)}"/>`).join('') +
       '</changeset></osm>';
     try {
+      const liveOsm = await fetchLiveOsmForBatch(batch);
       let r = await fetch(API + '/changeset/create', { method: 'PUT', headers: H, body: cs });
       if (!r.ok) throw new Error('changeset ' + r.status + ' ' + (await r.text()).slice(0, 120));
       const id = (await r.text()).trim();
       r = await fetch(API + '/changeset/' + id + '/upload', {
-        method: 'POST', headers: H, body: osmChange(batch, id),
+        method: 'POST', headers: H, body: osmChange(batch, id, liveOsm),
       });
       if (!r.ok) throw new Error('upload ' + r.status + ' ' + (await r.text()).slice(0, 200));
       await fetch(API + '/changeset/' + id + '/close', { method: 'PUT', headers: H });
       for (const b of batch) await dbDel('queue', b.key);
+      if (liveOsm.ways.size) ctxCells.clear();
       done += batch.length;
       setStage('Uploading ' + done + ' / ' + all.length);
     } catch (err) {

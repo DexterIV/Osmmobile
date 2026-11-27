@@ -117,6 +117,8 @@ function bindUI() {
   $('undoBtn').onclick = undo;
   $('autoBtn').onclick = autoAlign;
   $('sqBtn').onclick = squarify;
+  $('snapBtn').onclick = snapCurrent;
+  $('basemapBtn').onclick = cycleBasemap;
   $('idBtn').onclick = openInId;
   $('gmBtn').onclick = openInGoogleMaps;
   $('vertexToggle').onclick = (e) => {
@@ -191,6 +193,8 @@ function bindUI() {
     else if (low === 'z') undo();
     else if (low === 'g') autoAlign();
     else if (low === 'q') squarify();
+    else if (low === 's') snapCurrent();
+    else if (low === 'b') cycleBasemap();
     else if (low === 'v') $('vertexToggle').click();
     else if (low === 'e') openInId();
     else if (low === 'm') openInGoogleMaps();

@@ -11,6 +11,7 @@ function initMap() {
   // readable over it, and above the imagery so it is visible at all.
   pendingLayer = L.layerGroup().addTo(map);
   ctxLayer = L.layerGroup().addTo(map);
+  snapLayer = L.layerGroup().addTo(map);
   vertexGroup = L.layerGroup().addTo(map);
   // Redrawn on pan and zoom, not just per candidate: the point of this layer is
   // to answer "where does this go next", which is a question you ask by zooming
@@ -71,11 +72,14 @@ function cur() { return candidates[cursor]; }
 
 function setControls(on) {
   for (const el of document.querySelectorAll('#pad button, #padTools button, #bar button, #areaBtn')) {
+    if (el.id === 'basemapBtn') { el.disabled = false; continue; }
     el.disabled = !on;
   }
   if (on) {
     $('undoBtn').disabled = !undoStack.length;
-    $('sqBtn').disabled = !cur() || cur().kind !== 'building';
+    const isBldg = !!(cur() && cur().kind === 'building');
+    $('sqBtn').disabled = !isBldg;
+    $('snapBtn').disabled = !isBldg;
     if (pixelMode === 'blocked') $('autoBtn').disabled = true;
   }
 }
@@ -109,19 +113,22 @@ function drawShape() {
   const c = cur();
   if (shape) { map.removeLayer(shape); shape = null; }
   vertexGroup.clearLayers();
+  if (snapLayer) snapLayer.clearLayers();
   if (!c) return;
   if (c.kind === 'building' || c.kind === 'area') {
-    // Leaflet takes [outer, ...holes], so a hole is drawn as a hole rather than
-    // being lost or filled in.
-    const rings = [c.ring].concat((c.holes || []).filter((h) => h && h.length >= 3));
+    // Leaflet takes [outer, ...holes], so a courtyard hole on a building or an
+    // island hole in land cover is drawn as a hole rather than filled in.
+    const holes = (c.holes || []).filter((h) => h && h.length >= 3);
+    const rings = holes.length ? [c.ring].concat(holes) : c.ring;
     const area = c.kind === 'area';
-    shape = L.polygon(area ? rings : c.ring, {
+    shape = L.polygon(rings, {
       color: area ? '#a3e635' : '#ff2d95', weight: area ? 2 : 2.5,
       fillColor: area ? '#a3e635' : '#ff2d95', fillOpacity: area ? 0.08 : 0.12,
       className: 'cand',
     }).addTo(map);
     attachShapeDrag();
     drawVertices();
+    if (typeof drawSnapMarkers === 'function') drawSnapMarkers();
   } else {
     shape = L.circleMarker(c.ring[0], {
       color: '#ff2d95', weight: 3, radius: 11, fillColor: '#ff2d95', fillOpacity: 0.25,

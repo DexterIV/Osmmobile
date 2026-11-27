@@ -11,6 +11,7 @@ export const APP_PARTS = [
   'map.js',
   'edit.js',
   'context.js',
+  'snap.js',
   'chrome.js',
   'align.js',
   'action.js',
