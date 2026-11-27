@@ -3,6 +3,11 @@
 // markers on one is both useless and a way to break that shared edge by accident.
 const VERTEX_LIMIT = 80;
 
+function shapeLatLngs(c) {
+  const holes = (c.holes || []).filter((h) => h && h.length >= 3);
+  return holes.length ? [c.ring].concat(holes) : c.ring;
+}
+
 function drawVertices() {
   const c = cur();
   vertexGroup.clearLayers();
@@ -14,20 +19,48 @@ function drawVertices() {
       draggable: true, keyboard: false,
       icon: L.divIcon({ className: 'vtx', html: '<i></i>', iconSize: [40, 40], iconAnchor: [20, 20] }),
     }).addTo(vertexGroup);
-    m.on('dragstart', () => pushUndo());
+    let targets = null, snapRadiusM = 1.0;
+    m.on('dragstart', () => {
+      pushUndo();
+      targets = typeof snapTargetsFor === 'function' ? snapTargetsFor(c) : [];
+      // Scale magnetic snap radius to ~14 px on screen, bounded to 0.5–1.5 m.
+      const mpp = 156543.03392 * Math.cos(c.ring[i][0] * Math.PI / 180) / Math.pow(2, map.getZoom());
+      snapRadiusM = Math.min(1.5, Math.max(0.5, 14 * mpp));
+      if (!c.snaps || c.snaps.length !== c.ring.length) c.snaps = new Array(c.ring.length).fill(null);
+    });
     m.on('drag', (e) => {
       const ll = e.target.getLatLng();
-      c.ring[i] = [ll.lat, ll.lng];
-      shape.setLatLngs(c.ring);
+      let pos = [ll.lat, ll.lng];
+      let hit = null;
+      if (targets && targets.length && typeof snapPointToTargets === 'function') {
+        hit = snapPointToTargets(pos, targets, {
+          nodeTolM: snapRadiusM,
+          edgeTolM: snapRadiusM * 0.8,
+        });
+        if (hit) {
+          pos = hit.pt;
+          m.setLatLng(pos);
+        }
+      }
+      c.ring[i] = pos;
+      if (c.snaps) c.snaps[i] = hit;
+      shape.setLatLngs(shapeLatLngs(c));
+      if (typeof drawSnapMarkers === 'function') drawSnapMarkers(hit);
     });
-    m.on('dragend', () => { c.moved = true; paintChrome(); });
+    m.on('dragend', () => {
+      targets = null;
+      c.centroid = centroid(c.ring);
+      c.moved = true;
+      if (typeof drawSnapMarkers === 'function') drawSnapMarkers();
+      paintChrome();
+    });
   });
 }
 
 function attachShapeDrag() {
   const el = shape.getElement();
   if (!el) return;
-  let start = null, orig = null;
+  let start = null, orig = null, origHoles = null;
   el.style.cursor = 'move';
   el.addEventListener('pointerdown', (ev) => {
     if ($('vertexToggle').classList.contains('on')) return;
@@ -37,25 +70,32 @@ function attachShapeDrag() {
     pushUndo();
     start = map.mouseEventToContainerPoint(ev);
     orig = cur().ring.map((p) => p.slice());
+    origHoles = (cur().holes || []).map((h) => h.map((p) => p.slice()));
   });
   el.addEventListener('pointermove', (ev) => {
     if (!start) return;
     const now = map.mouseEventToContainerPoint(ev);
     const d = now.subtract(start);
     const c = cur();
-    c.ring = orig.map(([la, lo]) => {
+    const shiftRing = (r) => r.map(([la, lo]) => {
       const p = map.latLngToContainerPoint([la, lo]).add(d);
       const ll = map.containerPointToLatLng(p);
       return [ll.lat, ll.lng];
     });
-    shape.setLatLngs(c.ring);
+    c.ring = shiftRing(orig);
+    if (origHoles && origHoles.length) c.holes = origHoles.map(shiftRing);
+    shape.setLatLngs(shapeLatLngs(c));
   });
   const end = (ev) => {
     if (!start) return;
     start = null;
     map.dragging.enable();
     try { el.releasePointerCapture(ev.pointerId); } catch (e) {}
-    cur().moved = true;
+    const c = cur();
+    c.centroid = centroid(c.ring);
+    c.snaps = null;
+    c.moved = true;
+    if (typeof refreshAutoSnaps === 'function') refreshAutoSnaps();
     drawVertices();
     paintChrome();
   };
@@ -92,12 +132,16 @@ function attachPointDrag() {
   el.addEventListener('pointercancel', end);
 }
 
-// Snapshots tags as well as geometry, so Z undoes a tag edit too. It used to
-// store the ring alone, which meant an accidental tag change was unrecoverable.
+// Snapshots tags, holes and snaps as well as geometry, so Z undoes every edit.
 function pushUndo() {
   const c = cur();
   if (!c) return;
-  undoStack.push({ ring: c.ring.map((p) => p.slice()), tags: Object.assign({}, c.tags) });
+  undoStack.push({
+    ring: c.ring.map((p) => p.slice()),
+    holes: (c.holes || []).map((h) => h.map((p) => p.slice())),
+    snaps: c.snaps ? c.snaps.map((s) => s ? Object.assign({}, s) : null) : null,
+    tags: Object.assign({}, c.tags),
+  });
   if (undoStack.length > 40) undoStack.shift();
   $('undoBtn').disabled = false;
 }
@@ -107,9 +151,17 @@ function undo() {
   const c = cur();
   const prev = undoStack.pop();
   c.ring = prev.ring;
+  c.holes = prev.holes || [];
+  c.snaps = prev.snaps;
   c.tags = prev.tags;
-  if (c.kind === 'building') { shape.setLatLngs(c.ring); drawVertices(); }
-  else shape.setLatLng(c.ring[0]);
+  if (c.kind === 'building' || c.kind === 'area') {
+    c.centroid = centroid(c.ring);
+    shape.setLatLngs(shapeLatLngs(c));
+    drawVertices();
+    if (typeof drawSnapMarkers === 'function') drawSnapMarkers();
+  } else {
+    shape.setLatLng(c.ring[0]);
+  }
   $('undoBtn').disabled = !undoStack.length;
   paintTags();
   paintChrome();
@@ -249,9 +301,11 @@ function squarify() {
   }
   pushUndo();
   c.ring = out;
+  c.snaps = null;
   c.centroid = centroid(out);
   c.moved = true;
-  shape.setLatLngs(c.ring);
+  shape.setLatLngs(shapeLatLngs(c));
+  if (typeof refreshAutoSnaps === 'function') refreshAutoSnaps();
   drawVertices();
   paintChrome();
 }
@@ -262,9 +316,18 @@ function nudge(dxm, dym) {
   pushUndo();
   const mLat = 111320;
   const mLon = 111320 * Math.cos(c.centroid[0] * Math.PI / 180);
-  c.ring = c.ring.map(([la, lo]) => [la + dym / mLat, lo + dxm / mLon]);
-  if (c.kind === 'building') { shape.setLatLngs(c.ring); drawVertices(); }
-  else shape.setLatLng(c.ring[0]);
+  const shift = (r) => r.map(([la, lo]) => [la + dym / mLat, lo + dxm / mLon]);
+  c.ring = shift(c.ring);
+  if (c.holes && c.holes.length) c.holes = c.holes.map(shift);
+  if (c.kind === 'building' || c.kind === 'area') {
+    c.centroid = centroid(c.ring);
+    c.snaps = null;
+    shape.setLatLngs(shapeLatLngs(c));
+    if (typeof refreshAutoSnaps === 'function') refreshAutoSnaps();
+    drawVertices();
+  } else {
+    shape.setLatLng(c.ring[0]);
+  }
   c.moved = true;
   paintChrome();
 }

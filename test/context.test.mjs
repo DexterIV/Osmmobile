@@ -23,7 +23,7 @@ const make = new Function('Math',
   'return Math.hypot((b[0]-a[0])*mLat,(b[1]-a[1])*mLon);}' +
   src.slice(from, to) +
   src.slice(cellFrom, cellTo) +
-  '; return { pointInRing, ringCentroidSimple, overlapVerdict, duplicateAddress, metresBetween,' +
+  '; return { pointInRing, pointInPolygon, ringCentroidSimple, overlapVerdict, highwayOverlap, duplicateAddress, metresBetween,' +
   ' ctxCellKey, ctxCellsNear, ctxNear, ctxCellsNeeded, ctxCells };');
 const C = make(Math);
 
@@ -254,6 +254,78 @@ t('the candidate verdict is unchanged by the wider load', () => {
     '37A is inside way 848899621 (which straddles the split) — a real overlap');
   const dup = C.duplicateAddress(cand, near);
   assert.ok(!dup || !/already/.test(dup), 'nothing at 37A duplicates its house number');
+});
+
+// --- snapped boundaries, courtyard holes, highway overlap, and full ctxFromOsmXml ---
+t('a cleanly snapped semi-detached building sharing a wall is not flagged as an overlap', () => {
+  const left = sq(52.2000, 20.9920, 0.0002);
+  const right = sq(52.2000, 20.9922, 0.0002); // shares exact edge lon=20.9922
+  const cand = { kind: 'building', ring: right, centroid: C.ringCentroidSimple(right) };
+  const v = C.overlapVerdict(cand, { ways: [{ ring: left, hn: '' }], addrs: [] });
+  assert.equal(v.tier, null, 'shared boundary vertices must not false-positive as overlap');
+});
+
+t('a building inside a multipolygon building courtyard hole is not flagged as covered', () => {
+  const outer = sq(52.2000, 20.9900, 0.0010);
+  const hole = sq(52.2002, 20.9902, 0.0006);
+  const shed = sq(52.2004, 20.9904, 0.0001);
+  const cand = { kind: 'building', ring: shed, centroid: C.ringCentroidSimple(shed) };
+  const v = C.overlapVerdict(cand, { ways: [{ ring: outer, holes: [hole], hn: '' }], addrs: [] });
+  assert.equal(v.tier, null, 'a courtyard hole is open air, not part of the surrounding building');
+});
+
+t('highwayOverlap catches a building crossing an OSM road and ignores tunnels', () => {
+  const bldg = { kind: 'building', ring: sq(52.2000, 20.9920, 0.0002) };
+  const road = { kind: 'highway', sub: 'residential', covered: false, ring: [[52.2001, 20.9915], [52.2001, 20.9925]] };
+  const tunnel = { kind: 'highway', sub: 'service', covered: true, ring: [[52.2001, 20.9915], [52.2001, 20.9925]] };
+  assert.equal(C.highwayOverlap(bldg, { features: [road] }).tier, 2);
+  assert.equal(C.highwayOverlap(bldg, { features: [tunnel] }), null);
+});
+
+// Drive the real ctxFromOsmXml against core.wasm and osm-map-cell.xml
+const wasmBytes = readFileSync(new URL('../core.wasm', import.meta.url));
+const { exports: wasmExp } = await WebAssembly.instantiate(await WebAssembly.compile(wasmBytes), {
+  env: { abort: (m, f, l, c) => { throw new Error(`abort ${l}:${c}`); }, seed: () => 42 },
+});
+const ctxParseFrom = src.indexOf('function stitchMemberRings(');
+const ctxParseTo = src.indexOf('function pointInRing(');
+assert.ok(ctxParseFrom > 0 && ctxParseTo > ctxParseFrom, 'could not locate ctxFromOsmXml');
+const reFrom = src.indexOf('const REL_RE =');
+const reTo = src.indexOf('function parseGeoJson(');
+assert.ok(reFrom > 0 && reTo > reFrom, 'could not locate XML tag helpers');
+
+const W = {
+  bytes(str) {
+    const enc = new TextEncoder().encode(str);
+    const p = wasmExp.alloc(enc.length);
+    new Uint8Array(wasmExp.memory.buffer, p, enc.length).set(enc);
+    return [p, enc.length];
+  },
+  view64(ptr, n) { return new Float64Array(wasmExp.memory.buffer, ptr, n); },
+  view32(ptr, n) { return new Int32Array(wasmExp.memory.buffer, ptr, n); },
+};
+const ctxFromOsmXml = new Function('wasm', 'W',
+  'let RAW = "";\n' + src.slice(reFrom, reTo) + '\n' + src.slice(ctxParseFrom, ctxParseTo) +
+  '; return ctxFromOsmXml;')(wasmExp, W);
+
+t('ctxFromOsmXml extracts multipolygon buildings, building:parts, node/way ids, and non-building features from real OSM cell', () => {
+  const parsed = ctxFromOsmXml(xml);
+  // 17 tagged building ways + 1 multipolygon apartment building (rel 12862367, way 955827061) + 2 building:parts
+  assert.equal(parsed.ways.length, 20, 'expected 17 buildings + 1 multipolygon building + 2 building:parts, got ' + parsed.ways.length);
+  const mp = parsed.ways.find((w) => w.id === 955827061);
+  assert.ok(mp, 'multipolygon building outer way 955827061 must be extracted');
+  assert.equal(mp.hn, '5');
+  assert.equal(mp.street, 'Jana Karola Chodkiewicza');
+  assert.equal(mp.part, false);
+  assert.equal(mp.ring.length, mp.nodeIds.length);
+  assert.ok(mp.nodeIds.every((id) => id > 0), 'every vertex must retain its positive OSM node id');
+  assert.equal(parsed.ways.filter((w) => w.part).length, 2, 'both building:part ways must be extracted');
+  // Non-building context features: highways, barriers, landuse/natural/amenity/leisure
+  const byKind = {};
+  for (const f of parsed.features) byKind[f.kind] = (byKind[f.kind] || 0) + 1;
+  assert.ok(byKind.highway >= 45, 'expected highways to be drawn, got ' + byKind.highway);
+  assert.ok(byKind.barrier >= 30, 'expected barriers to be drawn, got ' + byKind.barrier);
+  assert.ok(byKind.area >= 15, 'expected mapped landuse/natural/amenity areas, got ' + byKind.area);
 });
 
 console.log('\ncontext: ' + pass + ' groups passed');

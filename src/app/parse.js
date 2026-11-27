@@ -174,12 +174,17 @@ function parseGeoJson(text) {
       });
       continue;
     }
-    for (const r of ringsOf(f.geometry)) {
-      const ring = r.map(([x, y]) => [y, x]);
-      const a = ring[0], z = ring[ring.length - 1];
-      if (a && z && a[0] === z[0] && a[1] === z[1]) ring.pop();
+    for (const poly of polysOf(f.geometry)) {
+      const toRing = (r) => {
+        const ring = r.map(([x, y]) => [y, x]);
+        const a = ring[0], z = ring[ring.length - 1];
+        if (a && z && a[0] === z[0] && a[1] === z[1]) ring.pop();
+        return ring;
+      };
+      const ring = toRing(poly[0]);
       if (ring.length < 3) continue;
-      out.push({ kind: 'building', ring, tags: Object.assign({}, tags), srcId });
+      const holes = poly.slice(1).map(toRing).filter((h) => h.length >= 3);
+      out.push({ kind: 'building', ring, holes, tags: Object.assign({}, tags), srcId });
     }
   }
   return out;
@@ -216,10 +221,10 @@ function tagsOf(props) {
   return t;
 }
 
-function ringsOf(geom) {
+function polysOf(geom) {
   if (!geom) return [];
-  if (geom.type === 'Polygon') return [geom.coordinates[0]];
-  if (geom.type === 'MultiPolygon') return geom.coordinates.map((p) => p[0]);
+  if (geom.type === 'Polygon') return [geom.coordinates];
+  if (geom.type === 'MultiPolygon') return geom.coordinates;
   return [];
 }
 

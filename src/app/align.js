@@ -72,9 +72,14 @@ async function autoAlign() {
     pushUndo();
     const mLat = 111320, mLon = 111320 * Math.cos(cen[0] * Math.PI / 180);
     const dxm = ox * mppx, dym = -oy * mppx;
-    c.ring = c.ring.map(([la, lo]) => [la + dym / mLat, lo + dxm / mLon]);
+    const shift = (r) => r.map(([la, lo]) => [la + dym / mLat, lo + dxm / mLon]);
+    c.ring = shift(c.ring);
+    if (c.holes && c.holes.length) c.holes = c.holes.map(shift);
+    c.centroid = centroid(c.ring);
+    c.snaps = null;
     c.moved = true;
-    shape.setLatLngs(c.ring);
+    shape.setLatLngs(shapeLatLngs(c));
+    if (typeof refreshAutoSnaps === 'function') refreshAutoSnaps();
     drawVertices();
     paintChrome();
     toast('Shifted ' + fmt(Math.hypot(dxm, dym), 1) + ' m  ·  z=' + fmt(z, 1) + '  ·  ' + fmt(gain, 2) + '× edge gain');

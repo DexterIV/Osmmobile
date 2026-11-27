@@ -96,14 +96,20 @@ path.cand{filter:drop-shadow(0 0 4px rgba(255,45,149,.5))}
 #autoBtn:disabled{color:var(--dim);border-color:var(--line);background:var(--panel2)}
 #autoBtn.busy{animation:pulse .7s infinite alternate}
 @keyframes pulse{to{background:#33280d}}
-#padTools{position:absolute;right:10px;bottom:190px;z-index:450;display:flex;flex-direction:column;gap:6px}
-#padTools button{width:44px;height:44px;border-radius:10px;border:1px solid var(--line);
+#padTools{position:absolute;right:10px;bottom:192px;z-index:450;display:grid;
+  grid-template-columns:repeat(2,42px);gap:5px}
+#padTools button{width:42px;height:40px;border-radius:9px;border:1px solid var(--line);
   background:rgba(18,26,34,.93);color:var(--dim);font-family:var(--mono);font-size:11px;
-  backdrop-filter:blur(8px);letter-spacing:.02em}
+  backdrop-filter:blur(8px);letter-spacing:.02em;padding:0;display:grid;place-items:center}
 #padTools button.on{color:var(--plot);border-color:#5c1240;background:#220d18}
 /* Distinct from the dim tool glyphs: it was easy to miss entirely at the edge
-   of the screen among two grey icons. */
-#idBtn,#gmBtn{color:var(--ctx);border-color:#164e5c;background:#0c2028;font-size:13px;letter-spacing:0}
+   of the screen among grey icons. */
+#idBtn,#gmBtn{color:var(--ctx);border-color:#164e5c;background:#0c2028;font-size:12px;letter-spacing:0}
+#basemapBtn{color:var(--text);border-color:var(--line);font-size:10px;letter-spacing:.02em}
+#basemapBtn.on{color:var(--ochre);border-color:#4d3c14;background:#1f1809}
+#basemapBtn.on.full{color:var(--ctx);border-color:#164e5c;background:#0c2028}
+#snapBtn{color:var(--verify);border-color:#1d4f3e;background:#0f2119;font-size:15px}
+#undoBtn{grid-column:1/3;width:auto}
 #padTools button:disabled{opacity:.4}
 
 /* min-height pins the one layout change that happens on every candidate. #tags
@@ -205,6 +211,7 @@ path.cand{filter:drop-shadow(0 0 4px rgba(255,45,149,.5))}
 .qSub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-top:3px;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .qMoved{color:var(--ochre)}
+.qSnapped{color:var(--verify)}
 .qRow button{border:1px solid var(--line);background:var(--panel2);color:var(--strike);
   border-radius:6px;font-size:15px;line-height:1;height:34px}
 #queueUpload{border-color:#1d4f3e;color:var(--verify);background:#0f1c17}
@@ -285,11 +292,13 @@ input,select{width:100%;background:var(--ink);border:1px solid var(--line);color
   <div id="map"></div>
 
   <div id="padTools">
+    <button id="basemapBtn" title="Toggle OSM standard map overlay (B): Off / 50% / 100%">OSM</button>
     <button id="idBtn" title="Open this spot in the iD editor (new tab)">iD</button>
     <button id="gmBtn" title="Open this spot in Google Maps satellite (new tab)">GM</button>
+    <button id="snapBtn" title="Snap building corners and walls to nearby OSM buildings (S)">⊞</button>
     <button id="sqBtn" title="Square the corners (Q)">◻</button>
-    <button id="vertexToggle" title="Edit vertices">◇</button>
-    <button id="undoBtn" disabled title="Undo">↶</button>
+    <button id="vertexToggle" title="Edit vertices (V)">◇</button>
+    <button id="undoBtn" disabled title="Undo (Z)">↶</button>
   </div>
 
   <div id="pad">
@@ -338,7 +347,8 @@ input,select{width:100%;background:var(--ink);border:1px solid var(--line);color
     or save it and open the file. A response of just <b>&lt;osm version="0.6"/&gt;</b> means
     nothing is pending there, so pan elsewhere.</p>
     <p>Keys: <b>A</b> accept, <b>R</b> reject, <b>L</b> later, <b>G</b> auto-fit,
-    <b>Z</b> undo, <b>V</b> vertices, <b>E</b> iD, <b>M</b> Google Maps, arrows nudge.</p>
+    <b>S</b> snap, <b>Q</b> square, <b>B</b> OSM map, <b>Z</b> undo, <b>V</b> vertices,
+    <b>E</b> iD, <b>M</b> Google Maps, arrows nudge.</p>
   </div>
 </div>
 

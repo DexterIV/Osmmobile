@@ -47,17 +47,28 @@ function ctxCellsNear(lat, lon) {
 }
 
 // Everything already loaded around the candidate, merged into one pseudo-cell
-// so overlapVerdict and duplicateAddress work without changes. Ways shared by
-// two cells appear twice; containment tests and Leaflet both tolerate that.
+// so overlapVerdict, duplicateAddress, snapping and drawContext work uniformly.
+// Ways/features with positive OSM ids are deduplicated so an object straddling
+// a cell boundary is not drawn twice or duplicated as a snap target.
 function ctxNear(lat, lon) {
-  const ways = [], addrs = [];
+  const ways = [], addrs = [], features = [];
+  const seenW = new Set(), seenF = new Set();
   for (const it of ctxCellsNear(lat, lon)) {
     const cell = ctxCells.get(it.key);
     if (!cell || cell === 'loading' || cell === 'failed') continue;
-    for (const w of cell.ways) ways.push(w);
+    for (const w of cell.ways) {
+      if (w.id > 0) { if (seenW.has(w.id)) continue; seenW.add(w.id); }
+      ways.push(w);
+    }
     for (const a of cell.addrs) addrs.push(a);
+    if (cell.features) {
+      for (const f of cell.features) {
+        if (f.id > 0) { if (seenF.has(f.id)) continue; seenF.add(f.id); }
+        features.push(f);
+      }
+    }
   }
-  return { ways, addrs };
+  return { ways, addrs, features };
 }
 
 // Which cells the candidate on screen actually needs loaded: its own cell, the
@@ -95,7 +106,7 @@ async function loadCtxCell(lat, lon) {
   if (known) return known === 'loading' || known === 'failed' ? null : known;
   ctxCells.set(key, 'loading');
 
-  const dbKey = 'osmctx/' + key;
+  const dbKey = 'osmctx2/' + key;
   const hit = await dbGet('ctx', dbKey).catch(() => null);
   if (hit && Date.now() - hit.t < S.ctxTTLhours * 3600e3) {
     ctxCells.set(key, hit.data);
@@ -134,13 +145,66 @@ async function loadCtxCell(lat, lon) {
   }
 }
 
-// An OSM API /map response to the shape drawContext and the verdicts want, via
-// the same wasm scanner used for candidate files. Kept separate from the fetch
-// so it can be tested against a captured response.
+// Stitch a list of resolved member ways ({ id, ring, nodeIds, closed }) into
+// closed rings. Already-closed ways pass through with their single OSM way id
+// intact; open segments stitch end-to-end by matching node ids (reversing when
+// needed) so multipolygon buildings split across multiple ways still draw.
+function stitchMemberRings(parts) {
+  const out = [];
+  const open = [];
+  for (const p of parts) {
+    if (p.closed && p.ring.length >= 3) {
+      out.push({ id: p.id, ring: p.ring, nodeIds: p.nodeIds });
+    } else if (p.ring.length >= 2) {
+      open.push({ ring: p.ring.slice(), nodeIds: p.nodeIds.slice() });
+    }
+  }
+  while (open.length) {
+    const cur = open.shift();
+    let changed = true;
+    while (changed && cur.nodeIds[0] !== cur.nodeIds[cur.nodeIds.length - 1]) {
+      changed = false;
+      const head = cur.nodeIds[0];
+      const tail = cur.nodeIds[cur.nodeIds.length - 1];
+      for (let i = 0; i < open.length; i++) {
+        const seg = open[i];
+        const sh = seg.nodeIds[0], st = seg.nodeIds[seg.nodeIds.length - 1];
+        if (tail === sh) {
+          cur.ring.push(...seg.ring.slice(1));
+          cur.nodeIds.push(...seg.nodeIds.slice(1));
+        } else if (tail === st) {
+          cur.ring.push(...seg.ring.slice(0, -1).reverse());
+          cur.nodeIds.push(...seg.nodeIds.slice(0, -1).reverse());
+        } else if (head === st) {
+          cur.ring.unshift(...seg.ring.slice(0, -1));
+          cur.nodeIds.unshift(...seg.nodeIds.slice(0, -1));
+        } else if (head === sh) {
+          cur.ring.unshift(...seg.ring.slice(1).reverse());
+          cur.nodeIds.unshift(...seg.nodeIds.slice(1).reverse());
+        } else continue;
+        open.splice(i, 1);
+        changed = true;
+        break;
+      }
+    }
+    if (cur.nodeIds.length >= 4 && cur.nodeIds[0] === cur.nodeIds[cur.nodeIds.length - 1]) {
+      cur.ring.pop();
+      cur.nodeIds.pop();
+      out.push({ id: 0, ring: cur.ring, nodeIds: cur.nodeIds });
+    }
+  }
+  return out;
+}
+
+// An OSM API /map response to the shape drawContext, snapping and the verdicts
+// want, via the same wasm scanner used for candidate files. Kept separate from
+// the fetch so it can be tested against a captured response.
 //
-// Only ways actually tagged building become footprints: /map returns everything
-// in the box, and drawing every closed way would put car parks and hedges on
-// screen as though they were buildings.
+// Buildings (simple ways, multipolygon relations, and building:part) go into
+// `ways` with their positive OSM way id and per-vertex node ids so snapping can
+// share real OSM topology. Non-building features (highways, railways, water,
+// barriers, structures and mapped areas) go into `features` so nothing mapped
+// in OSM is invisible over the orthophoto.
 function ctxFromOsmXml(text) {
   RAW = text;
   const [p, len] = W.bytes(text);
@@ -161,19 +225,160 @@ function ctxFromOsmXml(text) {
   const byId = new Map();
   for (let i = 0; i < nc; i++) byId.set(nid[i], i);
 
-  const data = { ways: [], addrs: [] };
+  // Read OSM way ids in document order (matching parseOsmXml's verified pattern).
+  const wayIds = [];
+  const wayIdxById = new Map();
+  let wayOrderOk = true;
+  {
+    let i = 0;
+    for (const m of RAW.matchAll(WAY_ID_RE)) {
+      const id = Number(m[1]);
+      if (i < wc) { wayIds.push(id); wayIdxById.set(id, i); }
+      i++;
+    }
+    if (i !== wc) wayOrderOk = false;
+  }
+
+  const resolveWay = (i) => {
+    const n = wN[i];
+    if (n < 2) return null;
+    const ring = [];
+    const nodeIds = [];
+    for (let k = 0; k < n; k++) {
+      const refId = refs[wA[i] + k];
+      const idx = byId.get(refId);
+      if (idx === undefined) return null;
+      ring.push([nlat[idx], nlon[idx]]);
+      nodeIds.push(refId);
+    }
+    const closed = ring.length >= 4 &&
+      (nodeIds[0] === nodeIds[nodeIds.length - 1] ||
+       (ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]));
+    if (closed) { ring.pop(); nodeIds.pop(); }
+    return { id: wayOrderOk ? wayIds[i] : 0, ring, nodeIds, closed };
+  };
+
+  const data = { ways: [], addrs: [], features: [] };
+  const consumedWays = new Set();
+
+  // Multipolygon relations (buildings with courtyards or multi-wing outlines,
+  // plus mapped water/landuse/natural areas). Without this pass, any building
+  // whose tags live on a multipolygon relation is completely invisible and
+  // skipped by overlap and duplicate-address checks.
+  for (const m of (wayOrderOk ? RAW.matchAll(REL_RE) : [])) {
+    const body = m[0];
+    const tags = tagsIn(m.index, m.index + body.length);
+    if (tags.type !== 'multipolygon') continue;
+    const isBldg = !!tags.building;
+    const isWater = tags.natural === 'water';
+    const isArea = !!(tags.landuse || tags.natural || tags.leisure || tags.amenity);
+    if (!isBldg && !isWater && !isArea) continue;
+
+    const outerParts = [], innerParts = [];
+    for (const mm of body.matchAll(MEMBER_RE)) {
+      if (mm[1] !== 'way') continue;
+      const idx = wayIdxById.get(Number(mm[2]));
+      if (idx === undefined) continue;
+      const rw = resolveWay(idx);
+      if (!rw) continue;
+      (mm[3] === 'inner' ? innerParts : outerParts).push(rw);
+      if (isBldg) consumedWays.add(idx);
+    }
+    const outers = stitchMemberRings(outerParts);
+    const inners = stitchMemberRings(innerParts).map((x) => x.ring);
+    if (!outers.length) continue;
+
+    if (isBldg) {
+      for (const o of outers) {
+        data.ways.push({
+          id: o.id,
+          ring: o.ring,
+          nodeIds: o.nodeIds,
+          holes: inners,
+          hn: tags['addr:housenumber'] || '',
+          street: tags['addr:street'] || '',
+          part: false,
+        });
+      }
+    } else {
+      for (const o of outers) {
+        data.features.push({
+          id: o.id,
+          kind: isWater ? 'water' : 'area',
+          ring: o.ring,
+          holes: inners,
+          closed: true,
+        });
+      }
+    }
+  }
+
   for (let i = 0; i < wc; i++) {
     const tags = tagsIn(wtA[i], wtB[i]);
-    if (!tags.building) continue;
-    const ring = [];
-    let ok = true;
-    for (let k = 0; k < wN[i]; k++) {
-      const idx = byId.get(refs[wA[i] + k]);
-      if (idx === undefined) { ok = false; break; }
-      ring.push([nlat[idx], nlon[idx]]);
+    const rw = resolveWay(i);
+    if (!rw) continue;
+
+    if (tags.building) {
+      if (rw.ring.length < 3) continue;
+      data.ways.push({
+        id: rw.id,
+        ring: rw.ring,
+        nodeIds: rw.nodeIds,
+        holes: [],
+        hn: tags['addr:housenumber'] || '',
+        street: tags['addr:street'] || '',
+        part: false,
+      });
+      continue;
     }
-    if (!ok || ring.length < 3) continue;
-    data.ways.push({ ring, hn: tags['addr:housenumber'] || '' });
+    if (consumedWays.has(i)) continue;
+
+    if (tags['building:part'] && rw.closed && rw.ring.length >= 3) {
+      data.ways.push({
+        id: rw.id,
+        ring: rw.ring,
+        nodeIds: rw.nodeIds,
+        holes: [],
+        hn: tags['addr:housenumber'] || '',
+        street: tags['addr:street'] || '',
+        part: true,
+      });
+      continue;
+    }
+
+    if (tags.highway && tags.highway !== 'proposed') {
+      const covered = !!(
+        (tags.tunnel && tags.tunnel !== 'no') ||
+        (tags.covered && tags.covered !== 'no') ||
+        (tags.indoor && tags.indoor !== 'no') ||
+        (tags.layer && Number(tags.layer) < 0)
+      );
+      data.features.push({
+        id: rw.id,
+        kind: 'highway',
+        sub: tags.highway,
+        ring: rw.ring,
+        closed: rw.closed && tags.area === 'yes',
+        covered,
+      });
+    } else if (tags.railway && tags.railway !== 'proposed') {
+      data.features.push({ id: rw.id, kind: 'railway', ring: rw.ring, closed: false });
+    } else if (tags.waterway || tags.natural === 'water') {
+      data.features.push({
+        id: rw.id,
+        kind: 'water',
+        ring: rw.ring,
+        closed: rw.closed && tags.natural === 'water',
+      });
+    } else if (tags.barrier) {
+      data.features.push({ id: rw.id, kind: 'barrier', ring: rw.ring, closed: false });
+    } else if (tags.man_made || tags.power) {
+      data.features.push({ id: rw.id, kind: 'structure', ring: rw.ring, closed: rw.closed });
+    } else if (tags.landuse || tags.leisure || tags.amenity || tags.natural) {
+      if (rw.closed && rw.ring.length >= 3) {
+        data.features.push({ id: rw.id, kind: 'area', ring: rw.ring, closed: true });
+      }
+    }
   }
   for (let i = 0; i < nc; i++) {
     if (ntB[i] <= ntA[i]) continue;
@@ -199,6 +404,34 @@ function pointInRing(pt, ring) {
   return inside;
 }
 
+function pointInPolygon(pt, ring, holes) {
+  if (!pointInRing(pt, ring)) return false;
+  if (holes && holes.length) {
+    for (const h of holes) if (h && h.length >= 3 && pointInRing(pt, h)) return false;
+  }
+  return true;
+}
+
+// Minimum distance in metres from pt to any edge of ring. Used so a vertex
+// cleanly snapped onto a neighbouring building's wall is not falsely flagged as
+// overlapping that building by ray-casting boundary ambiguity.
+function distToRingEdgeM(pt, ring) {
+  const mLat = 111320;
+  const mLon = 111320 * Math.cos(pt[0] * Math.PI / 180);
+  let best = Infinity;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const a = ring[j], b = ring[i];
+    const bx = (b[1] - a[1]) * mLon, by = (b[0] - a[0]) * mLat;
+    const px = (pt[1] - a[1]) * mLon, py = (pt[0] - a[0]) * mLat;
+    const len2 = bx * bx + by * by;
+    let t = len2 > 1e-12 ? (px * bx + py * by) / len2 : 0;
+    if (t < 0) t = 0; else if (t > 1) t = 1;
+    const d = Math.hypot(px - t * bx, py - t * by);
+    if (d < best) best = d;
+  }
+  return best;
+}
+
 function ringCentroidSimple(ring) {
   let la = 0, lo = 0;
   for (const p of ring) { la += p[0]; lo += p[1]; }
@@ -208,6 +441,8 @@ function ringCentroidSimple(ring) {
 // Verdict from real geometry rather than centroid distance. Containment either
 // way counts as an overlap: a candidate drawn inside an existing footprint is a
 // duplicate, and so is an existing building sitting inside the candidate.
+// Vertices sitting directly on an existing wall (within 15 cm, e.g. snapped
+// semi-detached houses) do not trigger a false overlap.
 function overlapVerdict(c, cell, what) {
   if (!cell || !cell.ways.length) return null;
   const it = what || 'an OSM building';
@@ -218,16 +453,56 @@ function overlapVerdict(c, cell, what) {
   if (c.kind === 'area') return null;
   for (const w of cell.ways) {
     if (c.kind === 'address') {
-      if (pointInRing(c.ring[0], w.ring)) {
+      if (pointInPolygon(c.ring[0], w.ring, w.holes)) {
         return { tier: 2, why: w.hn ? 'inside ' + it + ' ' + w.hn : 'inside ' + it };
       }
       continue;
     }
-    if (pointInRing(ringCentroidSimple(c.ring), w.ring)) return { tier: 2, why: 'covered by ' + it };
-    if (pointInRing(ringCentroidSimple(w.ring), c.ring)) return { tier: 2, why: 'contains ' + it };
-    for (const v of c.ring) if (pointInRing(v, w.ring)) return { tier: 2, why: 'overlaps ' + it };
+    if (pointInPolygon(ringCentroidSimple(c.ring), w.ring, w.holes)) return { tier: 2, why: 'covered by ' + it };
+    if (pointInPolygon(ringCentroidSimple(w.ring), c.ring, c.holes)) return { tier: 2, why: 'contains ' + it };
+    for (const v of c.ring) {
+      if (pointInPolygon(v, w.ring, w.holes) && distToRingEdgeM(v, w.ring) > 0.15) {
+        return { tier: 2, why: 'overlaps ' + it };
+      }
+    }
   }
   return { tier: null, why: '' };
+}
+
+function segsCross(a, b, c, d) {
+  const ccw = (p, q, r) => (r[0] - p[0]) * (q[1] - p[1]) - (q[0] - p[0]) * (r[1] - p[1]);
+  const d1 = ccw(a, b, c), d2 = ccw(a, b, d);
+  const d3 = ccw(c, d, a), d4 = ccw(c, d, b);
+  return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+         ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+}
+
+// Warn if a candidate building sits on top of a mapped OSM road/highway.
+// Covered/underground passages and indoor corridors are ignored.
+const ROAD_SKIP = { steps: 1, corridor: 1, elevator: 1, platform: 1, proposed: 1 };
+function highwayOverlap(c, cell) {
+  if (!cell || !cell.features || !cell.features.length || c.kind !== 'building') return null;
+  const ring = c.ring;
+  if (!ring || ring.length < 3) return null;
+  for (const f of cell.features) {
+    if (f.kind !== 'highway' || f.covered || ROAD_SKIP[f.sub]) continue;
+    const pts = f.ring;
+    if (!pts || pts.length < 2) continue;
+    for (const pt of pts) {
+      if (pointInPolygon(pt, ring, c.holes) && distToRingEdgeM(pt, ring) > 0.2) {
+        return { tier: 2, why: 'overlaps an OSM road' };
+      }
+    }
+    for (let k = 0; k + 1 < pts.length; k++) {
+      const p1 = pts[k], p2 = pts[k + 1];
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        if (segsCross(p1, p2, ring[j], ring[i])) {
+          return { tier: 2, why: 'crosses an OSM road' };
+        }
+      }
+    }
+  }
+  return null;
 }
 
 // Same address already mapped nearby? That is the address equivalent of an
@@ -243,7 +518,10 @@ function duplicateAddress(c, cell) {
   const near = [];
   for (const a of cell.addrs) near.push({ lat: a.lat, lon: a.lon, hn: a.hn, street: a.street });
   for (const w of cell.ways) {
-    if (w.hn) { const p = ringCentroidSimple(w.ring); near.push({ lat: p[0], lon: p[1], hn: w.hn, street: '' }); }
+    if (w.hn) {
+      const p = ringCentroidSimple(w.ring);
+      near.push({ lat: p[0], lon: p[1], hn: w.hn, street: w.street || '' });
+    }
   }
   for (const a of near) {
     if (String(a.hn).toLowerCase() !== hn) continue;
@@ -263,7 +541,7 @@ function queuedNear(c) {
     if (q.key === c.key) continue;
     if (q.kind === 'area') continue;
     if (metresBetween(centre, ringCentroidSimple(q.ring)) > 200) continue;
-    ways.push({ ring: q.ring, hn: q.hn });
+    ways.push({ ring: q.ring, holes: q.holes || [], hn: q.hn });
   }
   return { ways, addrs: [] };
 }
@@ -292,9 +570,18 @@ function drawPending() {
     const opts = { color: '#ff2d95', weight: 1, opacity: 0.4, dashArray: '3,3',
                    fillColor: '#ff2d95', fillOpacity: 0.05, interactive: false };
     if (p.kind === 'address') L.circleMarker(p.ring[0], Object.assign({ radius: 5 }, opts)).addTo(pendingLayer);
-    else L.polygon(p.ring, opts).addTo(pendingLayer);
+    else L.polygon(p.holes && p.holes.length ? [p.ring, ...p.holes] : p.ring, opts).addTo(pendingLayer);
   }
 }
+
+const CTX_FEATURE_STYLE = {
+  area:      { color: '#94a3b8', weight: 1,   opacity: 0.35, fillColor: '#94a3b8', fillOpacity: 0.05 },
+  water:     { color: '#38bdf8', weight: 1.5, opacity: 0.55, fillColor: '#38bdf8', fillOpacity: 0.12 },
+  barrier:   { color: '#94a3b8', weight: 1,   opacity: 0.38, dashArray: '2,3' },
+  railway:   { color: '#c084fc', weight: 1.5, opacity: 0.55, dashArray: '5,4' },
+  highway:   { color: '#fde68a', weight: 2,   opacity: 0.52, fillColor: '#fde68a', fillOpacity: 0.08 },
+  structure: { color: '#67e8f9', weight: 1.5, opacity: 0.55, dashArray: '3,3', fillColor: '#67e8f9', fillOpacity: 0.08 },
+};
 
 function drawContext() {
   ctxLayer.clearLayers();
@@ -336,6 +623,19 @@ function drawContext() {
 
   const near = ctxNear(centre[0], centre[1]);
 
+  // Draw non-building OSM context underneath footprints (roads, railways,
+  // waterways, barriers, mapped landuse/amenity areas) so mapped features are
+  // never invisible over the orthophoto.
+  for (const f of (near.features || [])) {
+    const st = Object.assign({ interactive: false }, CTX_FEATURE_STYLE[f.kind] || CTX_FEATURE_STYLE.area);
+    if (f.closed) {
+      const rings = f.holes && f.holes.length ? [f.ring, ...f.holes] : f.ring;
+      L.polygon(rings, st).addTo(ctxLayer);
+    } else {
+      L.polyline(f.ring, st).addTo(ctxLayer);
+    }
+  }
+
   // Faint centroid dots for whatever the cheap area-wide index knows about,
   // so context outside the loaded cells is not simply absent.
   // A dot that falls inside a loaded footprint is skipped: the outline explains
@@ -344,7 +644,7 @@ function drawContext() {
   // "a dot instead of a building".
   for (const [la, lo] of ctxPts) {
     if (metresBetween(centre, [la, lo]) > 150) continue;
-    if (near.ways.some((w) => pointInRing([la, lo], w.ring))) continue;
+    if (near.ways.some((w) => pointInPolygon([la, lo], w.ring, w.holes))) continue;
     L.circleMarker([la, lo], {
       radius: 3, color: '#22d3ee', weight: 1, opacity: 0.5,
       fillOpacity: 0.2, fillColor: '#22d3ee', interactive: false,
@@ -365,12 +665,18 @@ function drawContext() {
   }
 
   for (const w of near.ways) {
-    L.polygon(w.ring, {
+    const rings = w.holes && w.holes.length ? [w.ring, ...w.holes] : w.ring;
+    L.polygon(rings, {
       // Heavy enough to read on its own: over uncovered ortho (white tiles) the
       // old thin dashed line all but disappeared, leaving only the centroid
       // dot — "a dot instead of a building".
-      color: '#22d3ee', weight: 2, opacity: 0.9, dashArray: '4,3',
-      fillColor: '#22d3ee', fillOpacity: 0.14, interactive: false,
+      color: '#22d3ee',
+      weight: w.part ? 1.5 : 2,
+      opacity: w.part ? 0.65 : 0.9,
+      dashArray: w.part ? '2,3' : '4,3',
+      fillColor: '#22d3ee',
+      fillOpacity: w.part ? 0.07 : 0.14,
+      interactive: false,
     }).addTo(ctxLayer);
     // In Poland the house number often lives on the building rather than on a
     // separate node, and an unlabelled footprint hid those addresses: the map
@@ -394,6 +700,8 @@ function drawContext() {
       icon: L.divIcon({ className: 'ctxHn', html: esc(String(a.hn)), iconSize: null }),
     }).addTo(ctxLayer);
   }
+
+  if (typeof refreshAutoSnaps === 'function') refreshAutoSnaps();
 }
 
 function fitShape() {

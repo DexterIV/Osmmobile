@@ -15,11 +15,15 @@ function paintChrome() {
       const s = ctxCells.get(it.key);
       return !s || s === 'loading';
     });
-    if (near.ways.length || near.addrs.length) {
+    if (near.ways.length || near.addrs.length || (near.features && near.features.length)) {
       const v = overlapVerdict(c, near);
       if (v && v.tier !== null) { tier = v.tier; note = v.why; }
       const dup = duplicateAddress(c, near);
       if (dup) { tier = 2; note = dup; }
+      if (tier < 2 && typeof highwayOverlap === 'function') {
+        const hw = highwayOverlap(c, near);
+        if (hw) { tier = hw.tier; note = hw.why; }
+      }
     } else if (loadingNear) note = 'checking OSM…';
     else note = 'OSM check failed';
     // Checked last so it wins the label: overlapping something you accepted a
@@ -34,7 +38,11 @@ function paintChrome() {
   $('dist').textContent = note ? note
     : c && c.dist < 1e8 ? fmt(c.dist, 0) + ' m' : 'no OSM near';
   const d = c ? driftMeters() : 0;
-  $('drift').textContent = d > 0.05 ? '+' + fmt(d, 1) + ' m moved' : '';
+  const sn = c && c.snaps ? c.snaps.filter(Boolean).length : 0;
+  const parts = [];
+  if (d > 0.05) parts.push('+' + fmt(d, 1) + ' m moved');
+  if (sn) parts.push(sn + ' snapped');
+  $('drift').textContent = parts.join(' · ');
   paintSrcAge(c);
   $('stepLbl').textContent = fmt(S.driftStep, 2).replace(/0$/, '') + ' m';
 }

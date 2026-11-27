@@ -1,4 +1,5 @@
-let map, imgLayer, ctxLayer, pendingLayer, shape, vertexGroup, undoStack = [];
+let map, imgLayer, osmOverlayLayer, ctxLayer, pendingLayer, snapLayer, shape, vertexGroup, undoStack = [];
+let osmOverlayMode = 0; // 0 = orthophoto only, 1 = 50% OSM Standard overlay, 2 = 100% OSM Standard
 
 function imagerySource() {
   if (S.imagery === 'custom') return { url: S.customUrl, layers: S.customLayers, attr: 'custom' };
@@ -620,7 +621,63 @@ function makeImagery() {
   imgLayer.on('tileunload tileabort', (e) => { if (e.tile && e.tile._abort) e.tile._abort(); });
   imgLayer.addTo(map);
   imgLayer.bringToBack();
+  applyOsmOverlay();
   schedulePrefetch();
+}
+
+// Instant Standard Map (OSM Carto) toggle layered cleanly above the orthophoto
+// in Leaflet's tilePane. Keeping imgLayer intact underneath means flipping back
+// to satellite imagery is instant with zero re-fetching, and using plain
+// L.tileLayer keeps OSM tiles out of GUGiK's tilePath/tileFetchMisses probe.
+function applyOsmOverlay() {
+  const btn = $('basemapBtn');
+  if (!map) return;
+  if (osmOverlayMode === 0 || S.imagery === 'osm') {
+    if (osmOverlayLayer) { map.removeLayer(osmOverlayLayer); osmOverlayLayer = null; }
+    if (btn) {
+      btn.classList.remove('on', 'full');
+      btn.textContent = S.imagery === 'osm' ? 'OSM' : 'OSM';
+      btn.title = S.imagery === 'osm'
+        ? 'Primary imagery is already OSM Carto (change in Settings)'
+        : 'Toggle OSM standard map overlay (B): Off / 50% / 100%';
+    }
+    return;
+  }
+  const opacity = osmOverlayMode === 1 ? 0.55 : 1;
+  if (!osmOverlayLayer) {
+    osmOverlayLayer = L.tileLayer(PRESETS.osm.xyz, {
+      maxZoom: map.options.maxZoom,
+      maxNativeZoom: 19,
+      updateWhenZooming: false,
+      opacity,
+      attribution: PRESETS.osm.attr,
+    }).addTo(map);
+  } else {
+    osmOverlayLayer.setOpacity(opacity);
+  }
+  if (imgLayer) imgLayer.bringToBack();
+  if (btn) {
+    btn.classList.add('on');
+    btn.classList.toggle('full', osmOverlayMode === 2);
+    btn.textContent = osmOverlayMode === 1 ? '50%' : 'OSM';
+    btn.title = osmOverlayMode === 1
+      ? 'OSM standard overlay (50%) — tap for 100% standard map (B)'
+      : 'OSM standard map (100%) — tap to return to orthophoto (B)';
+  }
+}
+
+function cycleBasemap() {
+  if (S.imagery === 'osm') {
+    toast('Primary imagery is already OSM Carto — pick an orthophoto in Settings to blend', 'warn');
+    return;
+  }
+  osmOverlayMode = (osmOverlayMode + 1) % 3;
+  applyOsmOverlay();
+  toast(osmOverlayMode === 1
+    ? 'OSM standard overlay (50%)'
+    : osmOverlayMode === 2
+      ? 'OSM standard map (100%)'
+      : 'Orthophoto only');
 }
 
 function tileCacheMixin(Base) {
